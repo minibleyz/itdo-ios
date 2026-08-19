@@ -56,7 +56,7 @@ final class SessionStore: ObservableObject {
         await refreshProfile()
     }
 
-    func login(username: String, password: String) async {
+    func login(username: String, password: String, hcaptchaToken: String) async {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
@@ -64,7 +64,7 @@ final class SessionStore: ObservableObject {
             let response: AuthResponse = try await APIClient.shared.request(
                 "auth/login.php",
                 method: .post,
-                body: LoginRequest(username: username, password: password)
+                body: LoginRequest(username: username, password: password, hcaptcha_token: hcaptchaToken)
             )
             if let token = response.resolvedToken {
                 APIClient.shared.accessToken = token
@@ -80,7 +80,7 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    func register(name: String, username: String, email: String, password: String, captchaId: String?, captchaAnswer: String?) async {
+    func register(name: String, username: String, email: String, password: String, hcaptchaToken: String) async {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
@@ -90,7 +90,7 @@ final class SessionStore: ObservableObject {
                 method: .post,
                 body: RegisterRequest(
                     name: name, username: username, email: email, password: password,
-                    captcha_id: captchaId, captcha_answer: captchaAnswer
+                    hcaptcha_token: hcaptchaToken
                 )
             )
             if let token = response.resolvedToken {

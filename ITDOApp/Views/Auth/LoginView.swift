@@ -6,6 +6,7 @@ struct LoginView: View {
     @State private var password = ""
     @State private var showRegister = false
     @State private var showForgot = false
+    @State private var showCaptcha = false
     @State private var mode: AuthMode = .login
 
     enum AuthMode { case login, register }
@@ -50,6 +51,11 @@ struct LoginView: View {
         }
         .sheet(isPresented: $showForgot) {
             ForgotPasswordView()
+        }
+        .sheet(isPresented: $showCaptcha) {
+            HCaptchaSheet { token in
+                Task { await session.login(username: username, password: password, hcaptchaToken: token) }
+            }
         }
     }
 
@@ -159,7 +165,7 @@ struct LoginView: View {
             // Primary button
             Button {
                 if mode == .login {
-                    Task { await session.login(username: username, password: password) }
+                    showCaptcha = true
                 }
             } label: {
                 HStack(spacing: 8) {

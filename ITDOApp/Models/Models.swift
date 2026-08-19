@@ -95,6 +95,7 @@ struct SessionsResponse: Decodable {
 struct LoginRequest: Encodable {
     let username: String
     let password: String
+    let hcaptcha_token: String
 }
 
 struct RegisterRequest: Encodable {
@@ -102,8 +103,7 @@ struct RegisterRequest: Encodable {
     let username: String
     let email: String
     let password: String
-    let captcha_id: String?
-    let captcha_answer: String?
+    let hcaptcha_token: String
 }
 
 struct AuthResponse: Decodable {
