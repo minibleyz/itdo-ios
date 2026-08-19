@@ -1,0 +1,76 @@
+name: Build unsigned IPA
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    # macOS 26 (Tahoe) runner — даёт настоящий Xcode 26 / iOS 26 SDK,
+    # в котором физически существуют символы Liquid Glass
+    # (.glassEffect, GlassEffectContainer, .buttonStyle(.glass)).
+    # На macos-15 (Xcode 16, iOS 18 SDK) этих символов не существует
+    # даже для компиляции — поэтому используем macos-26.
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          echo "Доступные версии Xcode на раннере:"
+          ls /Applications | grep -i xcode || true
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE_PATH" ]; then
+            echo "::error::Xcode 26.x не найден в /Applications на этом раннере"
+            exit 1
+          fi
+          echo "Использую: $XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH"
+          xcodebuild -version
+
+      - name: Cache SPM & DerivedData
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/Developer/Xcode/DerivedData
+          key: xcode-${{ hashFiles('project.yml') }}
+          restore-keys: xcode-
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build unsigned archive
+        run: |
+          xcodebuild -project ITDOApp.xcodeproj \
+            -scheme ITDOApp \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/ITDOApp.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            -parallelizeTargets \
+            archive 2>&1 | tail -100
+
+      - name: Package .ipa (unsigned)
+        run: |
+          mkdir -p build/Payload
+          cp -R "build/ITDOApp.xcarchive/Products/Applications/ITDOApp.app" build/Payload/
+          cd build
+          zip -r ITDOApp-unsigned.ipa Payload
+          cd ..
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ITDOApp-unsigned-ipa
+          path: build/ITDOApp-unsigned.ipa
+          retention-days: 30
