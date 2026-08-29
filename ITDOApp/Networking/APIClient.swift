@@ -196,6 +196,88 @@ final class APIClient {
         let _: Empty? = try await request(path, method: method, query: query, body: body)
     }
 
+    // MARK: - Auth (login / register — выделенный путь)
+    //
+    // login.php/register.php НЕ должны идти через общий request(): тот при
+    // ЛЮБОМ 401 сначала пытается обновить access_token через refreshToken
+    // (которого при логине ещё не существует), после чего просто бросает
+    // generic .unauthorized — структурированное тело ответа сервера
+    // ({"two_factor_required":true}, {"banned":true,"ban_reason":...}) при
+    // этом полностью теряется, а сам факт неудачного "refresh" ещё и рассылал
+    // ложный sessionExpired. requestAuth читает тело ответа напрямую и
+    // превращает его в конкретный APIError, который экран логина уже может
+    // показать пользователю по существу.
+    private func requestAuth<T: Decodable>(_ path: String, body: Encodable) async throws -> T {
+        let url = APIConfig.apiURL.appendingPathComponent(path)
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONEncoder().encode(AnyEncodable(body))
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw APIError.offline
+        }
+        guard let http = response as? HTTPURLResponse else { throw APIError.unknown }
+
+        if (200...299).contains(http.statusCode) {
+            do {
+                return try decoder.decode(T.self, from: data)
+            } catch {
+                throw APIError.decoding
+            }
+        }
+
+        let errBody = try? decoder.decode(APIErrorBody.self, from: data)
+        if errBody?.two_factor_required == true {
+            throw APIError.twoFactorRequired
+        }
+        if errBody?.banned == true {
+            throw APIError.banned(reason: errBody?.ban_reason, until: errBody?.ban_until)
+        }
+        if http.statusCode == 429 {
+            throw APIError.rateLimited(errBody?.error ?? "Слишком много попыток. Попробуйте позже")
+        }
+        if let message = errBody?.error {
+            throw APIError.server(message)
+        }
+        throw APIError.server("Ошибка сервера (\(http.statusCode))")
+    }
+
+    /// totpCode передаётся только на повторной попытке после
+    /// APIError.twoFactorRequired — при первом запросе totp_code не шлём
+    /// вовсе (пустая строка на сервере трактуется так же, как отсутствие
+    /// поля, но лучше не отправлять лишнего).
+    func login(username: String, password: String, hcaptchaToken: String, totpCode: String? = nil) async throws -> AuthResponse {
+        struct Body: Encodable {
+            let username: String
+            let password: String
+            let hcaptcha_token: String
+            let totp_code: String?
+        }
+        return try await requestAuth(
+            "auth/login.php",
+            body: Body(username: username, password: password, hcaptcha_token: hcaptchaToken, totp_code: totpCode)
+        )
+    }
+
+    func register(name: String, username: String, email: String, password: String, hcaptchaToken: String) async throws -> AuthResponse {
+        try await requestAuth(
+            "auth/register.php",
+            body: RegisterRequest(name: name, username: username, email: email, password: password, hcaptcha_token: hcaptchaToken)
+        )
+    }
+
+    /// Публичный эндпоинт — актуальный hCaptcha sitekey (совпадает с тем,
+    /// что использует веб-версия login.html/register).
+    func fetchRegistrationStatus() async throws -> RegistrationStatusResponse {
+        try await request("auth/registration_status.php")
+    }
+
     // MARK: - Notifications
 
     func fetchNotifications(limit: Int = 30, offset: Int = 0, unreadOnly: Bool = false) async throws -> NotificationsResponse {
