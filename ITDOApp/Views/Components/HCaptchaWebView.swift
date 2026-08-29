@@ -45,6 +45,16 @@ struct HCaptchaWebView: UIViewRepresentable {
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
+        // Челлендж hCaptcha (сетка картинок после клика по чекбоксу) —
+        // это отдельный iframe, который сам hCaptcha абсолютно позиционирует
+        // ПОВЕРХ страницы и может быть заметно выше/шире, чем сам чекбокс.
+        // WKWebView всегда обрезает контент по границам своего view — если
+        // сама вебвью маленькая (как раньше, 120pt), картинки челленджа
+        // физически некуда развернуть: он не "адаптируется", а обрезается.
+        // bounces выключен, чтобы модалка с картинками не подпрыгивала при
+        // скролле внутри и без того тесного экрана.
+        webView.scrollView.bounces = false
+        webView.scrollView.showsVerticalScrollIndicator = false
         webView.loadHTMLString(Self.html(siteKey: siteKey), baseURL: URL(string: "https://itdo.app/"))
         return webView
     }
@@ -78,23 +88,36 @@ struct HCaptchaWebView: UIViewRepresentable {
     /// поэтому грузим виджет как "https://itdo.app/" (боевой домен сайта),
     /// а не file:// — иначе виджет может показывать ошибку интеграции
     /// сам по себе, ещё до отправки на бэкенд.
+    ///
+    /// user-scalable=no и стили ниже не дают Safari WebKit пытаться
+    /// самостоятельно масштабировать/зумить страницу при появлении
+    /// челленджа — раньше это тоже ломало раскладку картинок на маленьких
+    /// экранах.
     private static func html(siteKey: String) -> String {
         """
         <!DOCTYPE html>
         <html>
         <head>
-          <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+          <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
           <script src="https://js.hcaptcha.com/1/api.js" async defer></script>
           <style>
-            html, body { margin:0; padding:0; background:transparent; display:flex; align-items:center; justify-content:center; min-height:100vh; }
+            html, body {
+              margin:0; padding:0; background:transparent;
+              width:100%; height:100%;
+              display:flex; align-items:flex-start; justify-content:center;
+              overflow:visible;
+            }
+            .h-captcha { margin-top: 8px; }
           </style>
         </head>
         <body>
           <div class="h-captcha"
                data-sitekey="\(siteKey)"
+               data-size="normal"
                data-callback="onToken"
                data-expired-callback="onExpired"
-               data-error-callback="onError"></div>
+               data-error-callback="onError"
+               data-chalexpired-callback="onExpired"></div>
           <script>
             function onToken(token) {
               window.webkit.messageHandlers.hcaptchaHandler.postMessage({ token: token });
@@ -130,6 +153,10 @@ struct HCaptchaSheet: View {
                         .font(.footnote)
                         .foregroundStyle(.red)
                 }
+                // Раньше здесь стоял .frame(height: 120) — ровно под чекбокс
+                // без учёта картинок-челленджа, который хCaptcha показывает
+                // после клика. Теперь вебвью занимает всё доступное место
+                // листа, а не фиксированные 120pt.
                 HCaptchaWebView(
                     siteKey: siteKey ?? HCaptchaWebView.defaultSiteKey,
                     onToken: { token in
@@ -140,8 +167,7 @@ struct HCaptchaSheet: View {
                         errorText = "Капча не пройдена, попробуйте ещё раз (\(err))"
                     }
                 )
-                .frame(height: 120)
-                Spacer()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .padding()
             .navigationTitle("Подтверждение")
@@ -152,6 +178,10 @@ struct HCaptchaSheet: View {
                 }
             }
         }
-        .presentationDetents([.height(280)])
+        // Было .height(280) — этого хватало только на пустой чекбокс.
+        // Картиночный челлендж hCaptcha по факту занимает большую часть
+        // экрана телефона, поэтому даём листу вырасти почти во весь экран.
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
     }
 }
