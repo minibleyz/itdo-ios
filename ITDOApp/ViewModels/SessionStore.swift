@@ -10,6 +10,23 @@ final class SessionStore: ObservableObject {
     /// могут показать "работаем офлайн" вместо ошибки.
     @Published var isOfflineSession = false
 
+    /// true после APIError.twoFactorRequired — LoginView должен показать поле
+    /// ввода TOTP-кода и повторно вызвать submitTotp(code:), а не login().
+    @Published var needsTotp = false
+
+    /// Актуальный hCaptcha sitekey с сервера (auth/registration_status.php).
+    /// Пока не загружен — экраны используют захардкоженный fallback
+    /// в HCaptchaWebView.defaultSiteKey, так что виджет остаётся рабочим
+    /// даже без сети на самом первом запуске.
+    @Published var hcaptchaSiteKey: String?
+
+    /// Логин/пароль, введённые перед тем как сервер попросил 2FA — нужны,
+    /// чтобы submitTotp(code:) мог повторить login() с тем же паролем,
+    /// не заставляя пользователя вводить его снова.
+    private var pendingLoginUsername: String?
+    private var pendingLoginPassword: String?
+    private var pendingLoginHcaptchaToken: String?
+
     var isAuthenticated: Bool { currentUser != nil }
 
     private static let cachedUserKey = "itdo.cached_user"
@@ -59,25 +76,72 @@ final class SessionStore: ObservableObject {
     func login(username: String, password: String, hcaptchaToken: String) async {
         isLoading = true
         errorMessage = nil
+        needsTotp = false
         defer { isLoading = false }
         do {
-            let response: AuthResponse = try await APIClient.shared.request(
-                "auth/login.php",
-                method: .post,
-                body: LoginRequest(username: username, password: password, hcaptcha_token: hcaptchaToken)
+            let response = try await APIClient.shared.login(
+                username: username, password: password, hcaptchaToken: hcaptchaToken
             )
-            if let token = response.resolvedToken {
-                APIClient.shared.accessToken = token
-            }
-            // Сохраняем refresh_token для автоматического обновления
-            if let refreshToken = response.refresh_token {
-                APIClient.shared.refreshToken = refreshToken
-            }
-            currentUser = response.user
-            persistUserCache(response.user)
+            applyAuthResponse(response)
+        } catch APIError.twoFactorRequired {
+            // Пароль верный — сервер ждёт TOTP-код. Запоминаем введённые
+            // данные, чтобы submitTotp(code:) не просил их заново, и даём
+            // LoginView показать поле кода вместо generic-ошибки.
+            pendingLoginUsername = username
+            pendingLoginPassword = password
+            pendingLoginHcaptchaToken = hcaptchaToken
+            needsTotp = true
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Вторая попытка login() — с тем же логином/паролем/капчей, плюс
+    /// введённый пользователем 6-значный TOTP-код (или backup-код).
+    func submitTotp(code: String) async {
+        guard let username = pendingLoginUsername,
+              let password = pendingLoginPassword,
+              let hcaptchaToken = pendingLoginHcaptchaToken else {
+            errorMessage = "Сессия входа истекла, попробуйте снова"
+            needsTotp = false
+            return
+        }
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+        do {
+            let response = try await APIClient.shared.login(
+                username: username, password: password, hcaptchaToken: hcaptchaToken, totpCode: code
+            )
+            applyAuthResponse(response)
+            needsTotp = false
+            pendingLoginUsername = nil
+            pendingLoginPassword = nil
+            pendingLoginHcaptchaToken = nil
+        } catch {
+            // Остаёмся на экране ввода кода (needsTotp не сбрасываем) —
+            // неверный код не должен откатывать пользователя к вводу пароля.
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func cancelTotp() {
+        needsTotp = false
+        pendingLoginUsername = nil
+        pendingLoginPassword = nil
+        pendingLoginHcaptchaToken = nil
+        errorMessage = nil
+    }
+
+    private func applyAuthResponse(_ response: AuthResponse) {
+        if let token = response.resolvedToken {
+            APIClient.shared.accessToken = token
+        }
+        if let refreshToken = response.refresh_token {
+            APIClient.shared.refreshToken = refreshToken
+        }
+        currentUser = response.user
+        persistUserCache(response.user)
     }
 
     func register(name: String, username: String, email: String, password: String, hcaptchaToken: String) async {
@@ -85,13 +149,8 @@ final class SessionStore: ObservableObject {
         errorMessage = nil
         defer { isLoading = false }
         do {
-            let response: AuthResponse = try await APIClient.shared.request(
-                "auth/register.php",
-                method: .post,
-                body: RegisterRequest(
-                    name: name, username: username, email: email, password: password,
-                    hcaptcha_token: hcaptchaToken
-                )
+            let response = try await APIClient.shared.register(
+                name: name, username: username, email: email, password: password, hcaptchaToken: hcaptchaToken
             )
             if let token = response.resolvedToken {
                 APIClient.shared.accessToken = token
@@ -105,6 +164,17 @@ final class SessionStore: ObservableObject {
             pendingUser = response.user
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Подтягивает актуальный hCaptcha sitekey с сервера — вызывается при
+    /// появлении LoginView. Молча игнорирует ошибку: HCaptchaWebView всё
+    /// равно подстрахован захардкоженным fallback-значением.
+    func loadHCaptchaSiteKeyIfNeeded() async {
+        guard hcaptchaSiteKey == nil else { return }
+        if let status = try? await APIClient.shared.fetchRegistrationStatus(),
+           let key = status.hcaptchaSitekey, !key.isEmpty {
+            hcaptchaSiteKey = key
         }
     }
 
