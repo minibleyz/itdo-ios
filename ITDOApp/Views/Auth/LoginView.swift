@@ -46,6 +46,7 @@ struct LoginView: View {
             }
         }
         .ignoresSafeArea()
+        .task { await session.loadHCaptchaSiteKeyIfNeeded() }
         .sheet(isPresented: $showRegister) {
             RegisterView().environmentObject(session)
         }
@@ -53,9 +54,21 @@ struct LoginView: View {
             ForgotPasswordView()
         }
         .sheet(isPresented: $showCaptcha) {
-            HCaptchaSheet { token in
+            HCaptchaSheet(siteKey: session.hcaptchaSiteKey) { token in
                 Task { await session.login(username: username, password: password, hcaptchaToken: token) }
             }
+        }
+        // Пароль/капча прошли, сервер попросил TOTP-код (2FA) — раньше это
+        // состояние было недостижимо: любой не-2xx ответ login.php тонул в
+        // generic-ошибке ("Ошибка сервера (401)"), а поля для ввода кода в
+        // приложении не было вовсе, так что войти с включённой 2FA было
+        // невозможно.
+        .sheet(isPresented: Binding(
+            get: { session.needsTotp },
+            set: { if !$0 { session.cancelTotp() } }
+        )) {
+            TotpSheet()
+                .environmentObject(session)
         }
     }
 
@@ -451,4 +464,96 @@ struct ForgotPasswordView: View {
 
 #Preview {
     LoginView().environmentObject(SessionStore())
+}
+
+// MARK: - TOTP sheet (2FA при входе)
+
+/// Показывается вместо login-сабмита, когда auth/login.php ответил
+/// {"two_factor_required": true} — то есть пароль верный, но у аккаунта
+/// включена двухфакторка (как в веб-версии /login.html).
+private struct TotpSheet: View {
+    @EnvironmentObject private var session: SessionStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var code = ""
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                DesignTokens.background.ignoresSafeArea()
+                VStack(spacing: 20) {
+                    Image(systemName: "lock.shield.fill")
+                        .font(.system(size: 44))
+                        .foregroundStyle(DesignTokens.accentPrimary)
+                        .padding(.top, 24)
+
+                    Text("Двухфакторная аутентификация")
+                        .font(.system(size: 20, weight: .black, design: .rounded))
+                        .foregroundStyle(DesignTokens.textPrimary)
+                        .multilineTextAlignment(.center)
+
+                    Text("Введите код из приложения-аутентификатора или один из резервных кодов")
+                        .font(.system(size: 14))
+                        .foregroundStyle(DesignTokens.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+
+                    if let error = session.errorMessage {
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.circle.fill")
+                                .foregroundStyle(DesignTokens.error)
+                            Text(error)
+                                .font(.footnote)
+                                .foregroundStyle(DesignTokens.error)
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(DesignTokens.error.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal, 20)
+                    }
+
+                    AuthField(placeholder: "Код (6 цифр или резервный код)", text: $code)
+                        .keyboardType(.numbersAndPunctuation)
+                        .textContentType(.oneTimeCode)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .padding(.horizontal, 20)
+
+                    Button {
+                        Task { await session.submitTotp(code: code.trimmingCharacters(in: .whitespaces)) }
+                    } label: {
+                        HStack {
+                            if session.isLoading { ProgressView().tint(.white).scaleEffect(0.85) }
+                            Text("Подтвердить").fontWeight(.semibold)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .foregroundStyle(.white)
+                        .background(code.isEmpty || session.isLoading
+                            ? DesignTokens.accentPrimary.opacity(0.45)
+                            : DesignTokens.accentPrimary)
+                        .clipShape(Capsule())
+                    }
+                    .disabled(code.isEmpty || session.isLoading)
+                    .padding(.horizontal, 20)
+
+                    Spacer()
+                }
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Отмена") { session.cancelTotp() }
+                        .foregroundStyle(DesignTokens.accentPrimary)
+                }
+            }
+        }
+        // Как только вход реально завершится (needsTotp сброшен в
+        // submitTotp), закрываем sheet — сам SessionStore выставит
+        // currentUser и приложение переключится на основной экран.
+        .onChange(of: session.needsTotp) { stillNeeded in
+            if !stillNeeded { dismiss() }
+        }
+        .presentationDetents([.height(420)])
+    }
 }
