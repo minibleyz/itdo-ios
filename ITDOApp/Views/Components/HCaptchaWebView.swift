@@ -14,8 +14,18 @@ import WebKit
 /// А у логина в приложении капчи не было вовсе, поэтому вход всегда
 /// падал с 403 "Проверка hCaptcha обязательна".
 struct HCaptchaWebView: UIViewRepresentable {
-    /// Тот же sitekey, что используется на сайте (login.html / register).
-    static let siteKey = "5f92e784-d356-42ce-8244-5672a768ae26"
+    /// Fallback, если auth/registration_status.php ещё не успел
+    /// загрузиться (нет сети на самом первом запуске) — тот же sitekey,
+    /// что зашит и на вебе (login.html / register), так что виджет остаётся
+    /// рабочим даже без похода на сервер за актуальным значением.
+    static let defaultSiteKey = "5f92e784-d356-42ce-8244-5672a768ae26"
+
+    /// Актуальный sitekey — передаётся вызывающей стороной (обычно
+    /// SessionStore.hcaptchaSiteKey, подтянутый с auth/registration_status.php).
+    /// Раньше siteKey был захардкожен статической константой: если сервер
+    /// когда-нибудь сменит sitekey (как это уже делает веб через
+    /// registration_status.php), виджет в приложении молча сломается.
+    var siteKey: String = HCaptchaWebView.defaultSiteKey
 
     var onToken: (String) -> Void
     var onError: (String) -> Void
@@ -35,7 +45,7 @@ struct HCaptchaWebView: UIViewRepresentable {
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
-        webView.loadHTMLString(Self.html, baseURL: URL(string: "https://itdo.app/"))
+        webView.loadHTMLString(Self.html(siteKey: siteKey), baseURL: URL(string: "https://itdo.app/"))
         return webView
     }
 
@@ -68,40 +78,46 @@ struct HCaptchaWebView: UIViewRepresentable {
     /// поэтому грузим виджет как "https://itdo.app/" (боевой домен сайта),
     /// а не file:// — иначе виджет может показывать ошибку интеграции
     /// сам по себе, ещё до отправки на бэкенд.
-    private static let html = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-      <script src="https://js.hcaptcha.com/1/api.js" async defer></script>
-      <style>
-        html, body { margin:0; padding:0; background:transparent; display:flex; align-items:center; justify-content:center; min-height:100vh; }
-      </style>
-    </head>
-    <body>
-      <div class="h-captcha"
-           data-sitekey="\(siteKey)"
-           data-callback="onToken"
-           data-expired-callback="onExpired"
-           data-error-callback="onError"></div>
-      <script>
-        function onToken(token) {
-          window.webkit.messageHandlers.hcaptchaHandler.postMessage({ token: token });
-        }
-        function onExpired() {
-          window.webkit.messageHandlers.hcaptchaHandler.postMessage({ error: 'expired' });
-        }
-        function onError(err) {
-          window.webkit.messageHandlers.hcaptchaHandler.postMessage({ error: String(err || 'hcaptcha-error') });
-        }
-      </script>
-    </body>
-    </html>
-    """
+    private static func html(siteKey: String) -> String {
+        """
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+          <script src="https://js.hcaptcha.com/1/api.js" async defer></script>
+          <style>
+            html, body { margin:0; padding:0; background:transparent; display:flex; align-items:center; justify-content:center; min-height:100vh; }
+          </style>
+        </head>
+        <body>
+          <div class="h-captcha"
+               data-sitekey="\(siteKey)"
+               data-callback="onToken"
+               data-expired-callback="onExpired"
+               data-error-callback="onError"></div>
+          <script>
+            function onToken(token) {
+              window.webkit.messageHandlers.hcaptchaHandler.postMessage({ token: token });
+            }
+            function onExpired() {
+              window.webkit.messageHandlers.hcaptchaHandler.postMessage({ error: 'expired' });
+            }
+            function onError(err) {
+              window.webkit.messageHandlers.hcaptchaHandler.postMessage({ error: String(err || 'hcaptcha-error') });
+            }
+          </script>
+        </body>
+        </html>
+        """
+    }
 }
 
 /// Модальный экран капчи — переиспользуется и логином, и регистрацией.
 struct HCaptchaSheet: View {
+    /// Актуальный sitekey с сервера (SessionStore.hcaptchaSiteKey). Если ещё
+    /// не загружен (например, нет сети на самом первом запуске), передаём
+    /// nil — HCaptchaWebView сам подставит захардкоженный fallback-ключ.
+    var siteKey: String?
     let onCompleted: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var errorText: String?
@@ -115,6 +131,7 @@ struct HCaptchaSheet: View {
                         .foregroundStyle(.red)
                 }
                 HCaptchaWebView(
+                    siteKey: siteKey ?? HCaptchaWebView.defaultSiteKey,
                     onToken: { token in
                         onCompleted(token)
                         dismiss()
