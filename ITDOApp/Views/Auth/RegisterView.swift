@@ -44,13 +44,14 @@ struct RegisterView: View {
             }
             .navigationTitle("Регистрация")
             .navigationBarTitleDisplayMode(.inline)
+            .task { await session.loadHCaptchaSiteKeyIfNeeded() }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Закрыть") { dismiss() }
                 }
             }
             .sheet(isPresented: $showCaptcha) {
-                HCaptchaSheet { token in
+                HCaptchaSheet(siteKey: session.hcaptchaSiteKey) { token in
                     Task {
                         await session.register(
                             name: name, username: username, email: email, password: password,
