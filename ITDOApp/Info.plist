@@ -45,6 +45,9 @@
 	<!-- Камера — на будущее -->
 	<key>NSCameraUsageDescription</key>
 	<string>Нужна для съёмки фото и видео</string>
+	<!-- Face ID — как альтернатива вводу код-пароля приложения (см. PasscodeSettingsView) -->
+	<key>NSFaceIDUsageDescription</key>
+	<string>Используется как быстрая альтернатива вводу код-пароля приложения</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
