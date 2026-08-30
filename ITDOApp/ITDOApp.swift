@@ -61,7 +61,9 @@ struct ITDOApp: App {
 
                 // Экран блокировки — полноэкранный, без возможности закрыть свайпом
                 // или тапом мимо (allowCancel: false), перекрывает весь UI до
-                // правильного ввода кода или успешной биометрии.
+                // правильного ввода кода или успешной биометрии. Обёрнут в
+                // .screenCaptureProtected(), чтобы код-пароль нельзя было
+                // заскриншотить/записать (см. ScreenCaptureProtection.swift).
                 if isLocked {
                     PasscodeUnlockView(
                         allowBiometrics: biometricsEnabled,
@@ -79,6 +81,7 @@ struct ITDOApp: App {
                             withAnimation { isLocked = false }
                         }
                     )
+                    .screenCaptureProtected()
                     .transition(.opacity)
                     .zIndex(20)
                 }
