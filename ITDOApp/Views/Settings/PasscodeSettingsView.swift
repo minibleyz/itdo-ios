@@ -12,18 +12,25 @@ enum PasscodeLock {
     private static let hashKey = "passcode_hash"
     private static let saltKey = "passcode_salt"
 
-    /// Установлен ли код-пароль на этом устройстве.
+    /// Установлен ли код-пароль на этом устройстве. Лёгкая проверка
+    /// наличия — не требует Face ID/Touch ID/пароля, даже несмотря на то,
+    /// что сам хэш хранится через setProtected (см. KeychainStore.exists).
     static var isEnabled: Bool {
-        KeychainStore.get(forKey: hashKey) != nil
+        KeychainStore.exists(forKey: hashKey)
     }
 
     /// Задаёт новый код-пароль (перезаписывает старый, если он был).
     static func set(passcode: String) {
         let salt = UUID().uuidString
-        // deviceOnly: true — хэш и соль не попадают в бэкап устройства и не
-        // восстанавливаются на другом iPhone вместе с приложением.
+        // Соль не секретна сама по себе — deviceOnly достаточно, и это
+        // избавляет от лишнего промпта биометрии при каждой проверке кода
+        // (иначе пришлось бы расшифровывать через Face ID и соль, и хэш).
         KeychainStore.set(salt, forKey: saltKey, deviceOnly: true)
-        KeychainStore.set(hash(passcode, salt: salt), forKey: hashKey, deviceOnly: true)
+        // Хэш — самое чувствительное значение, поэтому храним его с
+        // привязкой к биометрии/паролю блокировки экрана (см.
+        // KeychainStore.setProtected): даже вытащенный из Keychain хэш
+        // нельзя прочитать без Face ID/Touch ID/пароля владельца.
+        KeychainStore.setProtected(hash(passcode, salt: salt), forKey: hashKey)
         clearLockout()
     }
 
@@ -31,9 +38,14 @@ enum PasscodeLock {
     /// используется только для смены/отключения кода в настройках, где
     /// счётчик попыток не нужен). Для основного экрана блокировки
     /// используйте verifyWithLockout(_:).
+    ///
+    /// Внимание: чтение хэша защищено kSecAttrAccessControl, поэтому эта
+    /// проверка может показать системный промпт Face ID/Touch ID/пароля
+    /// поверх экрана ввода код-пароля — это ожидаемо и является частью
+    /// защиты, а не багом.
     static func verify(_ passcode: String) -> Bool {
         guard let salt = KeychainStore.get(forKey: saltKey),
-              let storedHash = KeychainStore.get(forKey: hashKey) else { return false }
+              let storedHash = KeychainStore.getProtected(forKey: hashKey) else { return false }
         return hash(passcode, salt: salt) == storedHash
     }
 
@@ -240,6 +252,7 @@ struct PasscodeSettingsView: View {
                     },
                     onCancel: { presentedSheet = nil }
                 )
+                .screenCaptureProtected()
             case .changeVerify:
                 PasscodeUnlockView(
                     title: "Введите текущий код-пароль",
@@ -248,11 +261,13 @@ struct PasscodeSettingsView: View {
                     onCancel: { presentedSheet = nil },
                     onSuccess: { presentedSheet = .changeSetup }
                 )
+                .screenCaptureProtected()
             case .changeSetup:
                 PasscodeSetupView(
                     onCompleted: { presentedSheet = nil },
                     onCancel: { presentedSheet = nil }
                 )
+                .screenCaptureProtected()
             case .disableVerify:
                 PasscodeUnlockView(
                     title: "Введите код-пароль, чтобы отключить",
@@ -266,6 +281,7 @@ struct PasscodeSettingsView: View {
                         presentedSheet = nil
                     }
                 )
+                .screenCaptureProtected()
             }
         }
     }
