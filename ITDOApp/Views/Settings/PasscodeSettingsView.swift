@@ -21,9 +21,13 @@ enum PasscodeLock {
         let salt = UUID().uuidString
         KeychainStore.set(salt, forKey: saltKey)
         KeychainStore.set(hash(passcode, salt: salt), forKey: hashKey)
+        clearLockout()
     }
 
-    /// Проверяет введённый код-пароль.
+    /// Проверяет введённый код-пароль (без учёта блокировки по попыткам —
+    /// используется только для смены/отключения кода в настройках, где
+    /// счётчик попыток не нужен). Для основного экрана блокировки
+    /// используйте verifyWithLockout(_:).
     static func verify(_ passcode: String) -> Bool {
         guard let salt = KeychainStore.get(forKey: saltKey),
               let storedHash = KeychainStore.get(forKey: hashKey) else { return false }
@@ -34,11 +38,68 @@ enum PasscodeLock {
     static func disable() {
         KeychainStore.remove(forKey: hashKey)
         KeychainStore.remove(forKey: saltKey)
+        clearLockout()
     }
 
     private static func hash(_ passcode: String, salt: String) -> String {
         let digest = SHA256.hash(data: Data((salt + ":" + passcode).utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    // MARK: - Блокировка по количеству неверных попыток
+
+    /// После 5 неверных попыток подряд — блокировка на 1 минуту, чтобы
+    /// сделать перебор кода на устройстве бессмысленным. Счётчик и время
+    /// окончания блокировки хранятся в UserDefaults (это не секрет —
+    /// сам код-пароль по-прежнему проверяется только через Keychain-хэш).
+    static let maxAttempts = 5
+    static let lockoutDuration: TimeInterval = 60
+
+    private static let failedAttemptsKey = "passcode_failed_attempts"
+    private static let lockoutUntilKey = "passcode_lockout_until"
+
+    private static var failedAttempts: Int {
+        get { UserDefaults.standard.integer(forKey: failedAttemptsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: failedAttemptsKey) }
+    }
+
+    /// Если сейчас идёт блокировка — время, до которого она действует.
+    static var lockoutUntil: Date? {
+        get { UserDefaults.standard.object(forKey: lockoutUntilKey) as? Date }
+        set { UserDefaults.standard.set(newValue, forKey: lockoutUntilKey) }
+    }
+
+    static func clearLockout() {
+        failedAttempts = 0
+        lockoutUntil = nil
+    }
+
+    enum VerifyResult {
+        case success
+        /// Код неверный, но лимит попыток ещё не исчерпан.
+        case failure(attemptsRemaining: Int)
+        /// Лимит попыток исчерпан — ввод заблокирован до указанного времени.
+        case lockedOut(until: Date)
+    }
+
+    /// Проверка кода с учётом блокировки — используется на главном экране
+    /// блокировки приложения (PasscodeUnlockView с allowCancel: false).
+    static func verifyWithLockout(_ passcode: String) -> VerifyResult {
+        if let lockoutUntil, Date() < lockoutUntil {
+            return .lockedOut(until: lockoutUntil)
+        }
+        if verify(passcode) {
+            clearLockout()
+            return .success
+        }
+        failedAttempts += 1
+        if failedAttempts >= maxAttempts {
+            let until = Date().addingTimeInterval(lockoutDuration)
+            lockoutUntil = until
+            failedAttempts = 0
+            return .lockedOut(until: until)
+        }
+        return .failure(attemptsRemaining: maxAttempts - failedAttempts)
     }
 
     // MARK: - Face ID / Touch ID (опциональная альтернатива вводу кода)
@@ -129,6 +190,12 @@ struct PasscodeSettingsView: View {
                         }
                     } footer: {
                         Text("Если вернуться в приложение быстрее выбранного времени после сворачивания, код запрашиваться не будет.")
+                    }
+
+                    Section {
+                        Text("После \(PasscodeLock.maxAttempts) неверных попыток ввод блокируется на 1 минуту.")
+                            .font(.caption)
+                            .foregroundStyle(DesignTokens.textSecondary)
                     }
                 }
             }
@@ -261,18 +328,39 @@ struct PasscodeSetupView: View {
 /// Ввод существующего код-пароля — используется и как полноэкранный
 /// замок приложения при возврате из фона (allowCancel: false), и как шаг
 /// подтверждения перед сменой/отключением кода в настройках (allowCancel: true).
+///
+/// На главном экране блокировки (allowCancel: false) счётчик неверных
+/// попыток ведёт к временной блокировке ввода (см. PasscodeLock.verifyWithLockout) —
+/// на это время вместо клавиатуры показывается обратный отсчёт и кнопка
+/// "Забыли код-пароль?" для выхода из аккаунта.
 struct PasscodeUnlockView: View {
     var title: String = "Введите код-пароль"
     var subtitle: String? = nil
     var allowCancel: Bool = false
     var allowBiometrics: Bool = false
     var onCancel: (() -> Void)? = nil
+    /// Показывается только когда allowCancel == false (главный экран
+    /// блокировки) и только во время активной блокировки по попыткам.
+    var onForgotPasscode: (() -> Void)? = nil
     var onSuccess: () -> Void
 
     @State private var code = ""
     @State private var errorText: String?
     @State private var shakeTrigger: CGFloat = 0
     @State private var attemptedBiometrics = false
+    @State private var lockoutUntil: Date? = PasscodeLock.lockoutUntil
+    @State private var now = Date()
+    @State private var showForgotConfirm = false
+
+    private var isLockedOut: Bool {
+        guard let lockoutUntil else { return false }
+        return now < lockoutUntil
+    }
+
+    private var remainingLockoutSeconds: Int {
+        guard let lockoutUntil else { return 0 }
+        return max(0, Int(ceil(lockoutUntil.timeIntervalSince(now))))
+    }
 
     var body: some View {
         ZStack {
@@ -282,15 +370,19 @@ struct PasscodeUnlockView: View {
             VStack(spacing: 28) {
                 Spacer()
 
-                Image(systemName: "lock.shield")
+                Image(systemName: isLockedOut ? "lock.trianglebadge.exclamationmark" : "lock.shield")
                     .font(.system(size: 44))
-                    .foregroundStyle(DesignTokens.accentPrimary)
+                    .foregroundStyle(isLockedOut ? Color.red : DesignTokens.accentPrimary)
 
                 VStack(spacing: 6) {
-                    Text(title)
+                    Text(isLockedOut ? "Слишком много попыток" : title)
                         .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(.white)
-                    if let subtitle {
+                    if isLockedOut {
+                        Text("Повторите через \(remainingLockoutSeconds) сек.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.white.opacity(0.6))
+                    } else if let subtitle {
                         Text(subtitle)
                             .font(.system(size: 13))
                             .foregroundStyle(.white.opacity(0.6))
@@ -299,8 +391,9 @@ struct PasscodeUnlockView: View {
 
                 PasscodeDots(filled: code.count, total: 6)
                     .modifier(PasscodeShakeEffect(animatableData: shakeTrigger))
+                    .opacity(isLockedOut ? 0.3 : 1)
 
-                if let errorText {
+                if let errorText, !isLockedOut {
                     Text(errorText)
                         .font(.system(size: 13))
                         .foregroundStyle(.red)
@@ -318,8 +411,16 @@ struct PasscodeUnlockView: View {
                     onBiometrics: runBiometrics
                 )
                 .padding(.bottom, 24)
+                .disabled(isLockedOut)
+                .opacity(isLockedOut ? 0.3 : 1)
 
-                if allowCancel {
+                if isLockedOut && !allowCancel && onForgotPasscode != nil {
+                    Button("Забыли код-пароль? Выйти из аккаунта") {
+                        showForgotConfirm = true
+                    }
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding(.bottom, 12)
+                } else if allowCancel {
                     Button("Отмена") { onCancel?() }
                         .foregroundStyle(.white.opacity(0.7))
                         .padding(.bottom, 12)
@@ -329,24 +430,45 @@ struct PasscodeUnlockView: View {
             }
         }
         .onAppear {
-            if allowBiometrics && PasscodeLock.biometryAvailable && !attemptedBiometrics {
+            if allowBiometrics && PasscodeLock.biometryAvailable && !attemptedBiometrics && !isLockedOut {
                 attemptedBiometrics = true
                 runBiometrics()
             }
         }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { tick in
+            now = tick
+            if let lockoutUntil, now >= lockoutUntil {
+                self.lockoutUntil = nil
+            }
+        }
+        .alert("Выйти из аккаунта?", isPresented: $showForgotConfirm) {
+            Button("Отмена", role: .cancel) {}
+            Button("Выйти и сбросить код", role: .destructive) {
+                onForgotPasscode?()
+            }
+        } message: {
+            Text("Код-пароль будет сброшен, а сеанс в приложении завершён — при следующем входе нужно будет авторизоваться заново.")
+        }
     }
 
     private func append(_ digit: String) {
+        guard !isLockedOut else { return }
         guard code.count < 6 else { return }
         errorText = nil
         code += digit
         guard code.count == 6 else { return }
 
-        if PasscodeLock.verify(code) {
+        switch PasscodeLock.verifyWithLockout(code) {
+        case .success:
             onSuccess()
-        } else {
-            errorText = "Неверный код-пароль"
+        case .failure(let attemptsRemaining):
+            errorText = attemptsRemaining == 1
+                ? "Неверный код-пароль. Ещё 1 попытка до блокировки"
+                : "Неверный код-пароль. Осталось попыток: \(attemptsRemaining)"
             withAnimation(.default) { shakeTrigger += 1 }
+            code = ""
+        case .lockedOut(let until):
+            lockoutUntil = until
             code = ""
         }
     }
