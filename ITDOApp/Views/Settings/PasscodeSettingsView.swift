@@ -1,6 +1,7 @@
 import SwiftUI
 import CryptoKit
 import LocalAuthentication
+import UIKit
 
 /// Локальный код-пароль (PIN) для блокировки приложения. НЕ связан с
 /// паролем от аккаунта ITDO и никуда не отправляется — хранится только
@@ -19,8 +20,10 @@ enum PasscodeLock {
     /// Задаёт новый код-пароль (перезаписывает старый, если он был).
     static func set(passcode: String) {
         let salt = UUID().uuidString
-        KeychainStore.set(salt, forKey: saltKey)
-        KeychainStore.set(hash(passcode, salt: salt), forKey: hashKey)
+        // deviceOnly: true — хэш и соль не попадают в бэкап устройства и не
+        // восстанавливаются на другом iPhone вместе с приложением.
+        KeychainStore.set(salt, forKey: saltKey, deviceOnly: true)
+        KeychainStore.set(hash(passcode, salt: salt), forKey: hashKey, deviceOnly: true)
         clearLockout()
     }
 
@@ -128,6 +131,30 @@ enum PasscodeLock {
         context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { success, _ in
             DispatchQueue.main.async { completion(success) }
         }
+    }
+}
+
+/// Тактильная отдача для экрана код-пароля — вынесено в один enum, чтобы
+/// не плодить `UINotificationFeedbackGenerator()` в каждом месте отдельно.
+private enum PasscodeHaptics {
+    static func tap() {
+        let generator = UIImpactFeedbackGenerator(style: .light)
+        generator.impactOccurred()
+    }
+
+    static func success() {
+        let generator = UINotificationFeedbackGenerator()
+        generator.notificationOccurred(.success)
+    }
+
+    static func error() {
+        let generator = UINotificationFeedbackGenerator()
+        generator.notificationOccurred(.error)
+    }
+
+    static func warning() {
+        let generator = UINotificationFeedbackGenerator()
+        generator.notificationOccurred(.warning)
     }
 }
 
@@ -311,9 +338,11 @@ struct PasscodeSetupView: View {
         if let firstCode {
             if code == firstCode {
                 PasscodeLock.set(passcode: code)
+                PasscodeHaptics.success()
                 onCompleted()
             } else {
                 errorText = "Коды не совпадают, попробуйте снова"
+                PasscodeHaptics.error()
                 withAnimation(.default) { shakeTrigger += 1 }
                 self.firstCode = nil
                 code = ""
@@ -460,22 +489,28 @@ struct PasscodeUnlockView: View {
 
         switch PasscodeLock.verifyWithLockout(code) {
         case .success:
+            PasscodeHaptics.success()
             onSuccess()
         case .failure(let attemptsRemaining):
             errorText = attemptsRemaining == 1
                 ? "Неверный код-пароль. Ещё 1 попытка до блокировки"
                 : "Неверный код-пароль. Осталось попыток: \(attemptsRemaining)"
+            PasscodeHaptics.error()
             withAnimation(.default) { shakeTrigger += 1 }
             code = ""
         case .lockedOut(let until):
             lockoutUntil = until
+            PasscodeHaptics.warning()
             code = ""
         }
     }
 
     private func runBiometrics() {
         PasscodeLock.authenticateWithBiometrics(reason: "Разблокировать ITDO") { success in
-            if success { onSuccess() }
+            if success {
+                PasscodeHaptics.success()
+                onSuccess()
+            }
         }
     }
 }
@@ -555,7 +590,10 @@ private struct PasscodeNumpad: View {
     }
 
     private func numpadButton(_ digit: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        Button(action: {
+            PasscodeHaptics.tap()
+            action()
+        }) {
             Text(digit)
                 .font(.system(size: 28, weight: .medium))
                 .foregroundStyle(.white)
