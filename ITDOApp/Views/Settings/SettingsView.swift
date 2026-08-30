@@ -33,6 +33,11 @@ struct SettingsView: View {
                                 settingsRow(icon: "bell", title: "Уведомления", subtitle: "Пуш-уведомления")
                             }
                             NavigationLink {
+                                PasscodeSettingsView()
+                            } label: {
+                                settingsRow(icon: "lock.shield", title: "Код-пароль", subtitle: "Блокировка приложения")
+                            }
+                            NavigationLink {
                                 SessionsListView()
                             } label: {
                                 settingsRow(icon: "lock", title: "Сеансы входа", subtitle: "Устройства, где вы вошли")
