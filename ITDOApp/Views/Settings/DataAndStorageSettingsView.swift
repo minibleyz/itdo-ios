@@ -168,9 +168,25 @@ struct DataAndStorageSettingsView: View {
 /// сигнатуре байт (magic bytes), а не по расширению — файлы URLCache и
 /// AsyncImage хранятся без осмысленных расширений, поэтому только так
 /// цифры соответствуют тому, что реально занимает место.
+///
+/// Поддерживает выборочную очистку: пользователь может отметить, какие
+/// категории данных удалить (например, оставить голосовые, но стереть
+/// видео и фото), а не только "очистить всё".
 struct StorageUsageView: View {
     @State private var breakdown: StorageBreakdown?
     @State private var isLoading = true
+    @State private var showClearSheet = false
+    @State private var selectedKinds: Set<DataAndStorageCache.Kind> = []
+    @State private var showClearConfirm = false
+    @State private var isClearing = false
+
+    private let categories: [(kind: DataAndStorageCache.Kind, title: String, icon: String)] = [
+        (.photo, "Фото", "photo"),
+        (.video, "Видео", "video"),
+        (.audio, "Голосовые и аудио", "waveform"),
+        (.document, "Документы и ответы сервера", "doc.text"),
+        (.other, "Прочее", "questionmark.folder")
+    ]
 
     var body: some View {
         ZStack {
@@ -195,7 +211,7 @@ struct StorageUsageView: View {
                         storageRow(title: "Фото", icon: "photo", bytes: breakdown.photos, total: breakdown.total)
                         storageRow(title: "Видео", icon: "video", bytes: breakdown.videos, total: breakdown.total)
                         storageRow(title: "Голосовые и аудио", icon: "waveform", bytes: breakdown.audio, total: breakdown.total)
-                        storageRow(title: "Ответы сервера (JSON)", icon: "doc.text", bytes: breakdown.documents, total: breakdown.total)
+                        storageRow(title: "Документы и ответы сервера", icon: "doc.text", bytes: breakdown.documents, total: breakdown.total)
                         storageRow(title: "Прочее", icon: "questionmark.folder", bytes: breakdown.other, total: breakdown.total)
                     } else {
                         Text("Кэш пуст")
@@ -206,15 +222,127 @@ struct StorageUsageView: View {
                 } footer: {
                     Text("Подсчитано по фактическому содержимому папки кэша на устройстве.")
                 }
+
+                Section {
+                    Button(role: .destructive) {
+                        selectedKinds = Set(DataAndStorageCache.Kind.allCases)
+                        showClearSheet = true
+                    } label: {
+                        HStack {
+                            if isClearing {
+                                ProgressView()
+                                Text("Очистка…")
+                            } else {
+                                Label("Очистить кэш…", systemImage: "trash")
+                            }
+                            Spacer()
+                        }
+                    }
+                    .disabled(isLoading || isClearing || (breakdown?.total ?? 0) == 0)
+                } footer: {
+                    Text("Можно выбрать, какие типы данных удалить, а какие оставить.")
+                }
             }
             .scrollContentBackground(.hidden)
         }
         .navigationTitle("Использование памяти")
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            breakdown = await DataAndStorageCache.currentBreakdown()
-            isLoading = false
+            await reload()
         }
+        .sheet(isPresented: $showClearSheet) {
+            clearSelectionSheet
+        }
+        .alert("Удалить выбранные данные?", isPresented: $showClearConfirm) {
+            Button("Отмена", role: .cancel) {}
+            Button("Удалить", role: .destructive) {
+                Task { await performClear() }
+            }
+        } message: {
+            Text("Это освободит место на устройстве. Действие нельзя отменить.")
+        }
+    }
+
+    private var clearSelectionSheet: some View {
+        CompatNavigationStack {
+            Form {
+                Section {
+                    Button {
+                        if selectedKinds.count == categories.count {
+                            selectedKinds.removeAll()
+                        } else {
+                            selectedKinds = Set(categories.map(\.kind))
+                        }
+                    } label: {
+                        Text(selectedKinds.count == categories.count ? "Снять все галочки" : "Выбрать всё")
+                    }
+                }
+
+                Section {
+                    ForEach(categories, id: \.kind) { category in
+                        Toggle(isOn: Binding(
+                            get: { selectedKinds.contains(category.kind) },
+                            set: { isOn in
+                                if isOn {
+                                    selectedKinds.insert(category.kind)
+                                } else {
+                                    selectedKinds.remove(category.kind)
+                                }
+                            }
+                        )) {
+                            HStack {
+                                Label(category.title, systemImage: category.icon)
+                                Spacer()
+                                Text(sizeString(bytes(for: category.kind)))
+                                    .foregroundStyle(DesignTokens.textSecondary)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Что очистить")
+                } footer: {
+                    Text("Снимите галочку с тех типов данных, которые хотите оставить.")
+                }
+            }
+            .navigationTitle("Выбор данных")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Отмена") { showClearSheet = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Далее") {
+                        showClearSheet = false
+                        showClearConfirm = true
+                    }
+                    .disabled(selectedKinds.isEmpty)
+                }
+            }
+        }
+    }
+
+    private func bytes(for kind: DataAndStorageCache.Kind) -> Int64 {
+        guard let breakdown else { return 0 }
+        switch kind {
+        case .photo: return breakdown.photos
+        case .video: return breakdown.videos
+        case .audio: return breakdown.audio
+        case .document: return breakdown.documents
+        case .other: return breakdown.other
+        }
+    }
+
+    private func reload() async {
+        isLoading = true
+        breakdown = await DataAndStorageCache.currentBreakdown()
+        isLoading = false
+    }
+
+    private func performClear() async {
+        isClearing = true
+        defer { isClearing = false }
+        await DataAndStorageCache.clear(kinds: selectedKinds)
+        await reload()
     }
 
     private func storageRow(title: String, icon: String, bytes: Int64, total: Int64) -> some View {
@@ -278,7 +406,20 @@ struct StorageBreakdown {
 /// "itdo-api-cache"). Заменяет отсутствующий в проекте выделенный
 /// медиа-кэш-менеджер (в Telegram эту роль играет StorageUsageScreen +
 /// Postbox media cache).
+///
+/// ВАЖНО: этот кэш охватывает только папку Caches приложения. Это НЕ то же
+/// самое, что размер приложения в "Настройки → Основные → Хранилище iPhone" —
+/// туда входят: сам бинарник приложения, папка Documents (несжатая локальная
+/// база сообщений/вложений), Application Support (SQLite-хранилище чатов),
+/// временные файлы (tmp) и файлы, ожидающие отправки. Кэш — это только то,
+/// что безопасно удалить без потери данных; остальное система показывает
+/// как "Данные приложения" отдельной строкой.
 enum DataAndStorageCache {
+    /// Категория файла по содержимому (не по расширению).
+    enum Kind: CaseIterable, Hashable {
+        case photo, video, audio, document, other
+    }
+
     private static var cachesDirectory: URL? {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
     }
@@ -320,21 +461,47 @@ enum DataAndStorageCache {
         }.value
     }
 
-    static func clear() async {
+    /// Очищает кэш. По умолчанию (или если переданы все категории) —
+    /// удаляет всю папку Caches целиком, что быстрее и не оставляет
+    /// пустых директорий. Если передано подмножество категорий —
+    /// удаляет только файлы, классифицированные под них, остальное
+    /// оставляет нетронутым.
+    static func clear(kinds: Set<Kind> = Set(Kind.allCases)) async {
+        let clearsEverything = kinds == Set(Kind.allCases)
+
         await Task.detached(priority: .utility) {
             guard let cachesDirectory else { return }
             let fileManager = FileManager.default
-            if let contents = try? fileManager.contentsOfDirectory(at: cachesDirectory, includingPropertiesForKeys: nil) {
-                for url in contents {
-                    try? fileManager.removeItem(at: url)
+
+            if clearsEverything {
+                if let contents = try? fileManager.contentsOfDirectory(at: cachesDirectory, includingPropertiesForKeys: nil) {
+                    for url in contents {
+                        try? fileManager.removeItem(at: url)
+                    }
                 }
+                return
+            }
+
+            guard let enumerator = fileManager.enumerator(
+                at: cachesDirectory,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) else { return }
+
+            for case let url as URL in enumerator {
+                let values = try? url.resourceValues(forKeys: [.isRegularFileKey])
+                guard values?.isRegularFile == true else { continue }
+                guard kinds.contains(classify(url: url)) else { continue }
+                try? fileManager.removeItem(at: url)
             }
         }.value
-        URLCache.shared.removeAllCachedResponses()
-    }
 
-    private enum Kind {
-        case photo, video, audio, document, other
+        // URLCache хранит свой индекс отдельно от простого перечисления файлов
+        // (на новых iOS — в Cache.db), поэтому его нужно чистить явно, а не
+        // полагаться на удаление файлов по сигнатурам.
+        if clearsEverything || kinds.contains(.photo) || kinds.contains(.document) || kinds.contains(.other) {
+            URLCache.shared.removeAllCachedResponses()
+        }
     }
 
     /// Определяет тип файла по первым байтам содержимого (magic numbers),
@@ -355,24 +522,43 @@ enum DataAndStorageCache {
         if matches([0xFF, 0xD8, 0xFF]) { return .photo }                       // JPEG
         if matches([0x89, 0x50, 0x4E, 0x47]) { return .photo }                 // PNG
         if matches([0x47, 0x49, 0x46, 0x38]) { return .photo }                 // GIF
+        if matches([0x42, 0x4D]) { return .photo }                             // BMP
+        if matches([0x49, 0x49, 0x2A, 0x00]) || matches([0x4D, 0x4D, 0x00, 0x2A]) { return .photo } // TIFF (обе байт-очерёдности)
         if matches([0x52, 0x49, 0x46, 0x46], at: 0), matches([0x57, 0x45, 0x42, 0x50], at: 8) { return .photo } // WEBP
+
+        // AVI: RIFF-контейнер с меткой AVI на 8-м байте — проверяем раньше WAV,
+        // т.к. у обоих форматов общий префикс "RIFF"
+        if matches([0x52, 0x49, 0x46, 0x46], at: 0), matches([0x41, 0x56, 0x49, 0x20], at: 8) { return .video }
+        // WAV: RIFF-контейнер с меткой WAVE
+        if matches([0x52, 0x49, 0x46, 0x46], at: 0), matches([0x57, 0x41, 0x56, 0x45], at: 8) { return .audio }
+
         if bytes.count >= 12, matches([0x66, 0x74, 0x79, 0x70], at: 4) {
-            // ISO base media container ("ftyp") — различаем по бренду
+            // ISO base media container ("ftyp") — различаем по бренду.
             let brand = String(decoding: bytes[8..<min(12, bytes.count)], as: UTF8.self)
             if ["heic", "heix", "heif", "mif1", "msf1", "avif"].contains(brand) { return .photo }
-            if ["mp41", "mp42", "isom", "M4V ", "qt  "].contains(brand) { return .video }
             if ["M4A ", "M4B "].contains(brand) { return .audio }
+            // Остальные бренды (mp4, mp41, mp42, isom, qt/mov, m4v, 3gp и т.п.) —
+            // это видео-контейнеры; не перечисляем их поимённо, чтобы не терять
+            // новые/редкие бренды больших видеофайлов.
+            return .video
         }
 
         // Видео
-        if matches([0x00, 0x00, 0x00, 0x18]) || matches([0x00, 0x00, 0x00, 0x1C]) { return .video } // частые размеры box у mp4/mov
+        if matches([0x00, 0x00, 0x00, 0x18]) || matches([0x00, 0x00, 0x00, 0x1C]) { return .video } // частые размеры box у mp4/mov без ftyp на старте
         if matches([0x1A, 0x45, 0xDF, 0xA3]) { return .video }                 // WebM/Matroska
 
         // Аудио
         if matches([0x49, 0x44, 0x33]) { return .audio }                       // MP3 (ID3)
         if bytes.count >= 2, bytes[0] == 0xFF, (bytes[1] & 0xE0) == 0xE0 { return .audio } // MPEG audio frame
-        if matches([0x52, 0x49, 0x46, 0x46], at: 0), matches([0x57, 0x41, 0x56, 0x45], at: 8) { return .audio } // WAV
         if matches([0x63, 0x61, 0x66, 0x66]) { return .audio }                 // CAF (голосовые заметки)
+        if matches([0x66, 0x4C, 0x61, 0x43]) { return .audio }                 // FLAC
+        if matches([0x4F, 0x67, 0x67, 0x53]) { return .audio }                 // OGG/Opus
+
+        // Документы и структурированные данные
+        if matches([0x25, 0x50, 0x44, 0x46]) { return .document }              // PDF
+        if matches([0x50, 0x4B, 0x03, 0x04]) { return .document }              // ZIP-контейнеры (docx/xlsx/office/архивы)
+        if matches([0x53, 0x51, 0x4C, 0x69, 0x74, 0x65]) { return .document }  // SQLite database
+        if matches([0x62, 0x70, 0x6C, 0x69, 0x73, 0x74]) { return .document }  // Binary plist
 
         // JSON-ответы API (наш собственный офлайн-кэш и системный URLCache для JSON)
         if let first = bytes.first, first == UInt8(ascii: "{") || first == UInt8(ascii: "[") { return .document }
