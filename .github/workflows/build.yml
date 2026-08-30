@@ -1,4 +1,4 @@
-name: Build unsigned IPA
+name: Build IPA
 
 on:
   push:
@@ -48,6 +48,7 @@ jobs:
 
       - name: Build unsigned archive
         run: |
+          set -o pipefail
           xcodebuild -project ITDOApp.xcodeproj \
             -scheme ITDOApp \
             -configuration Release \
@@ -58,7 +59,24 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             ONLY_ACTIVE_ARCH=NO \
             -parallelizeTargets \
-            archive 2>&1 | tail -100
+            archive | tee build/xcodebuild.log | tail -200
+
+      - name: Verify archive exists
+        run: |
+          APP_PATH="build/ITDOApp.xcarchive/Products/Applications/ITDOApp.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "::error::Архив не найден по пути $APP_PATH — сборка провалилась, см. лог выше или артефакт xcodebuild-log"
+            exit 1
+          fi
+          echo "OK: $APP_PATH существует"
+
+      - name: Upload full build log (always, for debugging)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: build/xcodebuild.log
+          retention-days: 7
 
       - name: Package .ipa (unsigned)
         run: |
