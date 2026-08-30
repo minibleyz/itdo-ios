@@ -65,6 +65,16 @@ struct ITDOApp: App {
                 if isLocked {
                     PasscodeUnlockView(
                         allowBiometrics: biometricsEnabled,
+                        onForgotPasscode: {
+                            // Пользователь не может подобрать код и не помнит его —
+                            // единственный выход: полностью сбросить локальный
+                            // код-пароль и разлогинить, чтобы не блокировать
+                            // доступ к приложению навсегда.
+                            PasscodeLock.disable()
+                            biometricsEnabled = false
+                            session.logout()
+                            withAnimation { isLocked = false }
+                        },
                         onSuccess: {
                             withAnimation { isLocked = false }
                         }
