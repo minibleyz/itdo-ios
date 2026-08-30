@@ -70,6 +70,14 @@ struct SettingsView: View {
                             }
                         }
 
+                        section(title: "Данные и память") {
+                            NavigationLink {
+                                DataAndStorageSettingsView()
+                            } label: {
+                                settingsRow(icon: "internaldrive", title: "Данные и память", subtitle: "Автозагрузка, кэш, трафик")
+                            }
+                        }
+
                         section(title: "Интеграции") {
                             settingsRow(icon: "sparkles.tv.fill", title: "ITDO Agent", subtitle: "AI-помощник")
                         }
