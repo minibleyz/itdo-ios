@@ -10,56 +10,110 @@ struct ITDOApp: App {
     // всегда был захардкожен .dark — поэтому светлая тема никогда не включалась.
     @AppStorage("dark_mode") private var isDarkMode = true
 
+    // MARK: - Код-пароль (PasscodeLock) + размытие в App Switcher
+    // isLocked стартует сразу true, если код-пароль включён — тогда холодный
+    // запуск приложения тоже требует ввода кода, а не только возврат из фона.
+    @State private var isLocked = PasscodeLock.isEnabled
+    @State private var showPrivacyBlur = false
+    @State private var backgroundedAt: Date?
+    @AppStorage("passcode_auto_lock_seconds") private var autoLockSeconds: Double = 0
+    @AppStorage("passcode_biometrics_enabled") private var biometricsEnabled = false
+
     var body: some Scene {
         WindowGroup {
-            RootView()
-                .environmentObject(session)
-                .preferredColorScheme(isDarkMode ? .dark : .light)
-                .task {
-                    // Стартуем мониторинг сети как можно раньше — до
-                    // restoreSession() в RootView, — чтобы холодный запуск
-                    // без интернета сразу знал об этом и не пытался
-                    // разлогинить пользователя по таймауту (см. NetworkMonitor.swift).
-                    NetworkMonitor.shared.start()
-                }
-                .onChange(of: scenePhase) { _, phase in
-                    switch phase {
-                    case .active:
-                        // Приложение на переднем плане — подключаем WS
-                        if session.currentUser != nil {
-                            WSClient.shared.connect()
-                            Task { try? await APIClient.shared.setOnline() }
-                            // Вернулись из фона/офлайна — досинхронизируем
-                            // профиль, если в прошлый раз не получилось.
-                            if session.isOfflineSession {
-                                Task { await session.refreshProfile() }
-                            }
+            ZStack {
+                RootView()
+                    .environmentObject(session)
+                    .preferredColorScheme(isDarkMode ? .dark : .light)
+                    .task {
+                        // Стартуем мониторинг сети как можно раньше — до
+                        // restoreSession() в RootView, — чтобы холодный запуск
+                        // без интернета сразу знал об этом и не пытался
+                        // разлогинить пользователя по таймауту (см. NetworkMonitor.swift).
+                        NetworkMonitor.shared.start()
+                    }
+                    .onChange(of: rtc.callState) { _, newState in
+                        // PushKit получил входящий звонок — показываем UI
+                        if case .incomingRinging = newState {
+                            showIncomingCall = true
                         }
-                    case .background:
-                        // Ушли в фон — отключаем WS
-                        WSClient.shared.disconnect()
-                        Task { try? await APIClient.shared.setOffline() }
-                    default:
-                        break
                     }
-                }
-                .onChange(of: rtc.callState) { _, newState in
-                    // PushKit получил входящий звонок — показываем UI
-                    if case .incomingRinging = newState {
-                        showIncomingCall = true
+                    .fullScreenCover(isPresented: $showIncomingCall) {
+                        if case .incomingRinging(let callId, let callerName, let callType) = rtc.callState {
+                            IncomingCallScreen(
+                                callId: callId,
+                                callerName: callerName,
+                                callType: callType,
+                                rtc: rtc,
+                                onDismiss: { showIncomingCall = false }
+                            )
+                        }
                     }
+
+                // Размытие поверх всего контента, пока приложение сворачивается —
+                // защищает от подглядывания через App Switcher/Recents. Показывается
+                // только когда включён код-пароль (см. PasscodeSettingsView).
+                if showPrivacyBlur {
+                    PrivacyBlurOverlay()
+                        .transition(.opacity)
+                        .zIndex(10)
                 }
-                .fullScreenCover(isPresented: $showIncomingCall) {
-                    if case .incomingRinging(let callId, let callerName, let callType) = rtc.callState {
-                        IncomingCallScreen(
-                            callId: callId,
-                            callerName: callerName,
-                            callType: callType,
-                            rtc: rtc,
-                            onDismiss: { showIncomingCall = false }
-                        )
+
+                // Экран блокировки — полноэкранный, без возможности закрыть свайпом
+                // или тапом мимо (allowCancel: false), перекрывает весь UI до
+                // правильного ввода кода или успешной биометрии.
+                if isLocked {
+                    PasscodeUnlockView(
+                        allowBiometrics: biometricsEnabled,
+                        onSuccess: {
+                            withAnimation { isLocked = false }
+                        }
+                    )
+                    .transition(.opacity)
+                    .zIndex(20)
+                }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                switch phase {
+                case .active:
+                    showPrivacyBlur = false
+                    if PasscodeLock.isEnabled, let backgroundedAt {
+                        let elapsed = Date().timeIntervalSince(backgroundedAt)
+                        if elapsed >= autoLockSeconds {
+                            isLocked = true
+                        }
                     }
+                    self.backgroundedAt = nil
+
+                    // Приложение на переднем плане — подключаем WS
+                    if session.currentUser != nil {
+                        WSClient.shared.connect()
+                        Task { try? await APIClient.shared.setOnline() }
+                        // Вернулись из фона/офлайна — досинхронизируем
+                        // профиль, если в прошлый раз не получилось.
+                        if session.isOfflineSession {
+                            Task { await session.refreshProfile() }
+                        }
+                    }
+                case .inactive:
+                    // .inactive — момент, когда система делает снимок для
+                    // App Switcher (и при звонках/шторках). Показываем блюр
+                    // сразу здесь, а не в .background, чтобы он успел
+                    // попасть в сам снимок.
+                    if PasscodeLock.isEnabled {
+                        showPrivacyBlur = true
+                    }
+                case .background:
+                    if PasscodeLock.isEnabled {
+                        backgroundedAt = Date()
+                    }
+                    // Ушли в фон — отключаем WS
+                    WSClient.shared.disconnect()
+                    Task { try? await APIClient.shared.setOffline() }
+                @unknown default:
+                    break
                 }
+            }
         }
     }
 }
