@@ -188,7 +188,7 @@ struct StorageUsageView: View {
                         }
                     }
                 }
-                Section("По типам") {
+                Section {
                     if isLoading {
                         ProgressView()
                     } else if let breakdown, breakdown.total > 0 {
@@ -201,6 +201,8 @@ struct StorageUsageView: View {
                         Text("Кэш пуст")
                             .foregroundStyle(DesignTokens.textSecondary)
                     }
+                } header: {
+                    Text("По типам")
                 } footer: {
                     Text("Подсчитано по фактическому содержимому папки кэша на устройстве.")
                 }
