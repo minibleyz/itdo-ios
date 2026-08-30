@@ -22,7 +22,9 @@ targets:
     info:
       path: ITDOApp/Info.plist
       properties:
+        CFBundleDevelopmentRegion: ru
         CFBundleDisplayName: ITDO
+        LSRequiresIPhoneOS: true
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -30,8 +32,24 @@ targets:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        UIStatusBarStyle: UIStatusBarStyleLightContent
+        UIViewControllerBasedStatusBarAppearance: false
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        # xcodegen регенерирует Info.plist целиком из этих properties при
+        # каждом "xcodegen generate" — ручные правки прямо в ITDOApp/Info.plist
+        # затираются и НЕ попадают в сборку (так уже терялись ключи ниже:
+        # NSExceptionDomains, микрофон/фото/камера, Face ID). Поэтому все
+        # кастомные ключи плиста должны жить здесь, а не в самом файле.
         NSAppTransportSecurity:
-          NSAllowsArbitraryLoads: false
+          NSExceptionDomains:
+            itdo.bleyzos.ru:
+              NSExceptionAllowsInsecureHTTPLoads: false
+              NSIncludesSubdomains: true
+        NSMicrophoneUsageDescription: "Нужен для записи голосовых сообщений"
+        NSPhotoLibraryUsageDescription: "Нужна для прикрепления фото к сообщениям и постам"
+        NSCameraUsageDescription: "Нужна для съёмки фото и видео"
+        NSFaceIDUsageDescription: "Используется как быстрая альтернатива вводу код-пароля приложения"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ru.bleyzos.itdo.app
