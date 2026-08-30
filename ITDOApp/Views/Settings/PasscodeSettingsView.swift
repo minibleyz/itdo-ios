@@ -343,6 +343,15 @@ struct PasscodeSetupView: View {
                     .padding(.bottom, 12)
             }
         }
+        // Заблокировать сам скриншот на iOS невозможно — реагируем
+        // постфактум: обнуляем введённый ввод и предупреждаем тактильно
+        // и текстом. См. ScreenCaptureProtection.swift.
+        .onScreenshotTaken {
+            PasscodeHaptics.warning()
+            code = ""
+            firstCode = nil
+            errorText = "Сделан скриншот — начните ввод заново"
+        }
     }
 
     private func append(_ digit: String) {
@@ -484,6 +493,16 @@ struct PasscodeUnlockView: View {
             now = tick
             if let lockoutUntil, now >= lockoutUntil {
                 self.lockoutUntil = nil
+            }
+        }
+        .onScreenshotTaken {
+            // Заблокировать сам скриншот на iOS невозможно — реагируем
+            // постфактум: сбрасываем частично введённый код и предупреждаем.
+            // См. ScreenCaptureProtection.swift.
+            PasscodeHaptics.warning()
+            code = ""
+            if !isLockedOut {
+                errorText = "Сделан скриншот"
             }
         }
         .alert("Выйти из аккаунта?", isPresented: $showForgotConfirm) {
