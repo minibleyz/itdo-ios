@@ -1,4 +1,4 @@
-name: Build IPA
+name: Build unsigned IPA
 
 on:
   push:
@@ -49,6 +49,7 @@ jobs:
       - name: Build unsigned archive
         run: |
           set -o pipefail
+          mkdir -p build
           xcodebuild -project ITDOApp.xcodeproj \
             -scheme ITDOApp \
             -configuration Release \
