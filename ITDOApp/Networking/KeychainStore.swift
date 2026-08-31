@@ -57,62 +57,25 @@ enum KeychainStore {
         return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
     }
 
-    /// Сохраняет значение, привязанное к текущей биометрии устройства или
-    /// его паролю блокировки экрана (`kSecAttrAccessControl`), а не просто
-    /// к устройству в целом. Это сильнее, чем `set(..., deviceOnly: true)`:
-    /// даже если сам Keychain-контейнер физически извлечь с устройства
-    /// (в обход обычного iCloud/iTunes-бэкапа, из которого deviceOnly уже
-    /// исключает элемент), значение всё равно нельзя расшифровать без
-    /// Face ID/Touch ID/пароля владельца экрана блокировки. Если владелец
-    /// удалит все отпечатки/лица и настроит новые, старая запись
-    /// становится недоступной автоматически (.biometryCurrentSet).
-    ///
-    /// На устройстве без Face ID/Touch ID и без пароля блокировки экрана
-    /// `SecAccessControlCreateWithFlags` вернёт nil — тогда откатываемся
-    /// на обычное deviceOnly-хранение, чтобы не потерять код-пароль.
-    ///
-    /// Внимание: чтение через `getProtected` может показать системный
-    /// промпт Face ID/Touch ID/пароля — вызывающий код должен быть готов
-    /// к этой задержке и к возможному отказу пользователя.
+    /// ИСТОРИЧЕСКИ здесь хэш код-пароля защищался ещё и системным
+    /// kSecAttrAccessControl(.biometryCurrentSet, .or, .devicePasscode) —
+    /// это убрано (см. коммит), потому что дублировало проверку самого
+    /// код-пароля приложения ещё одним синхронным системным промптом на
+    /// каждый ввод, что приводило к "зацикливанию" Face ID и к убийству
+    /// приложения watchdog'ом при недоступности биометрии. Теперь это
+    /// обычное deviceOnly-хранение, как и соль — сам код-пароль плюс
+    /// лимит попыток (см. PasscodeLock.verifyWithLockout) остаются
+    /// единственным и достаточным механизмом проверки.
     @discardableResult
     static func setProtected(_ value: String, forKey key: String) -> Bool {
-        let data = Data(value.utf8)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: key
-        ]
-        SecItemDelete(query as CFDictionary)
-
-        var attributes = query
-        attributes[kSecValueData as String] = data
-
-        if let access = SecAccessControlCreateWithFlags(
-            nil,
-            kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-            [.biometryCurrentSet, .or, .devicePasscode],
-            nil
-        ) {
-            attributes[kSecAttrAccessControl as String] = access
-        } else {
-            attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        }
-        return SecItemAdd(attributes as CFDictionary, nil) == errSecSuccess
+        set(value, forKey: key, deviceOnly: true)
+        return true
     }
 
-    /// Читает значение, сохранённое через `set` или `setProtected` — если
-    /// элемент был защищён `kSecAttrAccessControl`, система сама покажет
-    /// промпт Face ID/Touch ID/пароля перед тем, как вернуть данные.
+    /// Читает значение, сохранённое через `set`/`setProtected`. Больше НЕ
+    /// показывает системный промпт Face ID/Touch ID/пароля — см. комментарий
+    /// у `setProtected`.
     static func getProtected(forKey key: String) -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrAccount as String: key,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseOperationPrompt as String: "Подтвердите личность, чтобы разблокировать ITDO"
-        ]
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        get(forKey: key)
     }
 }
