@@ -87,6 +87,13 @@ struct ClipsView: View {
     }
 }
 
+// MARK: - Identifiable wrapper for fullScreenCover(item:)
+// Int сам по себе не соответствует Identifiable — .fullScreenCover(item:)
+// требует Identifiable, поэтому оборачиваем userId в эту структуру.
+private struct AuthorID: Identifiable, Equatable {
+    let id: Int
+}
+
 // MARK: - One clip page
 
 struct ClipPlayerPage: View {
@@ -105,7 +112,7 @@ struct ClipPlayerPage: View {
     // Навигация к профилю автора — было compatNavigationDestination(item:),
     // но эта страница больше не имеет собственного NavigationStack (см. ниже),
     // поэтому теперь просто fullScreenCover.
-    @State private var openAuthorId: Int?
+    @State private var openAuthorId: AuthorID?
     // Комментарии
     @State private var showComments = false
 
@@ -142,7 +149,7 @@ struct ClipPlayerPage: View {
                         // Bottom-left: author + views
                         VStack(alignment: .leading, spacing: 6) {
                             Button {
-                                openAuthorId = clip.userId
+                                openAuthorId = AuthorID(id: clip.userId)
                             } label: {
                                 HStack(spacing: 8) {
                                     if let avatar = clip.avatar, let url = URL.secure(avatar) {
@@ -258,9 +265,9 @@ struct ClipPlayerPage: View {
                 }
             }
         }
-        .fullScreenCover(item: $openAuthorId) { userId in
+        .fullScreenCover(item: $openAuthorId) { authorId in
             CompatNavigationStack {
-                UserProfileView(userId: userId)
+                UserProfileView(userId: authorId.id)
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
                             Button("Закрыть") { openAuthorId = nil }
