@@ -19,6 +19,13 @@ targets:
     platform: iOS
     sources:
       - path: ITDOApp
+    dependencies:
+      # Встраивает ShareExtension.appex в .app/PlugIns — без этого таргет
+      # расширения мог бы существовать и даже собираться, но не попадал бы
+      # в финальный .ipa и физически не мог бы появиться в системном шите
+      # "Поделиться" на устройстве.
+      - target: ShareExtension
+        embed: true
     info:
       path: ITDOApp/Info.plist
       properties:
@@ -60,6 +67,36 @@ targets:
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGN_IDENTITY: ""
         DEVELOPMENT_TEAM: ""
+        # App Group нужен, чтобы основное приложение могло прочитать текст,
+        # который ShareExtension положит в общий контейнер (см.
+        # ITDOApp/Utilities/SharedContainer.swift). Сам App Group ("group.ru.bleyzos.itdo")
+        # нужно ЕЩЁ создать/включить в Apple Developer аккаунте и в
+        # Xcode → Signing & Capabilities для обоих таргетов — xcodegen
+        # прописывает entitlements-файл, но не создаёт capability на портале Apple.
+        CODE_SIGN_ENTITLEMENTS: ITDOApp/ITDOApp.entitlements
         # WebRTC: добавить через CocoaPods (pod install) или скачать фреймворк
         # и положить в папку ITDOApp/Frameworks/ перед билдом.
         # CallKit — системный фреймворк, линкуется автоматически при импорте.
+
+  ShareExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ShareExtension
+    info:
+      path: ShareExtension/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ru.bleyzos.itdo.app.share
+        PRODUCT_NAME: ShareExtension
+        GENERATE_INFOPLIST_FILE: false
+        INFOPLIST_FILE: ShareExtension/Info.plist
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGN_IDENTITY: ""
+        DEVELOPMENT_TEAM: ""
+        CODE_SIGN_ENTITLEMENTS: ShareExtension/ShareExtension.entitlements
+        SKIP_INSTALL: YES
+        # У app-extension обязателен собственный deployment target ≤ основного
+        # приложения — не задаём отдельно, наследуется из base (17.0).
