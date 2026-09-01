@@ -1,5 +1,12 @@
 import SwiftUI
 
+extension Notification.Name {
+    /// Отправляется, когда основное приложение забрало из App Group
+    /// текст/ссылку, положенные туда Share Extension (см.
+    /// SharedContainer.consumePendingShare()). object — сам текст (String).
+    static let pendingShareReceived = Notification.Name("pendingShareReceived")
+}
+
 @main
 struct ITDOApp: App {
     @StateObject private var session = SessionStore()
@@ -112,6 +119,17 @@ struct ITDOApp: App {
                         }
                     }
                     self.backgroundedAt = nil
+
+                    // Share Extension мог положить текст/ссылку в App Group,
+                    // пока приложение было закрыто/в фоне (см.
+                    // ShareExtension/ShareViewController.swift +
+                    // SharedContainer.swift). Забираем его при каждом
+                    // возврате на передний план и уведомляем ленту — она
+                    // откроет композер поста с уже подставленным текстом
+                    // (см. .onReceive(.pendingShareReceived) в FeedView.swift).
+                    if let sharedText = SharedContainer.consumePendingShare() {
+                        NotificationCenter.default.post(name: .pendingShareReceived, object: sharedText)
+                    }
 
                     // Приложение на переднем плане — подключаем WS
                     if session.currentUser != nil {
