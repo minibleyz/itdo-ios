@@ -9,8 +9,29 @@ import UIKit
 /// в открытом виде. Используется для показа PasscodeUnlockView поверх
 /// UI, когда приложение возвращается из фона (см. ITDOApp.swift).
 enum PasscodeLock {
-    private static let hashKey = "passcode_hash"
-    private static let saltKey = "passcode_salt"
+    // ВАЖНО: ключи переименованы с "passcode_hash"/"passcode_salt" на
+    // "_v2". Причина — на ранних тестовых сборках (до коммита, убравшего
+    // kSecAttrAccessControl(.biometryCurrentSet, .or, .devicePasscode))
+    // хэш код-пароля сохранялся с этой биометрической ACL. iOS НЕ чистит
+    // Keychain при удалении приложения — эта заражённая запись переживала
+    // любой снос/переустановку/смену Bundle ID (если Bundle ID совпадал)
+    // и любую новую версию кода. Каждое чтение такой записи синхронно
+    // блокировало главный поток в ожидании системного Face ID (видно в
+    // краш-репорте как SecItemCopyMatching → LAContext evaluateAccessControl
+    // на главном потоке), и watchdog убивал процесс через 5 сек (0x8BADF00D).
+    // Смена имени ключа делает старую запись орфаном, который больше
+    // никогда не читается — новый код работает с чистого листа.
+    private static let hashKey = "passcode_hash_v2"
+    private static let saltKey = "passcode_salt_v2"
+
+    /// Одноразовая зачистка старых заражённых записей (см. комментарий
+    /// выше). Достаточно "best effort" SecItemDelete по старым именам —
+    /// сам факт удаления не требует чтения/расшифровки значения, поэтому
+    /// НЕ триггерит биометрию. Безопасно вызывать многократно.
+    static func purgeLegacyKeychainEntries() {
+        KeychainStore.remove(forKey: "passcode_hash")
+        KeychainStore.remove(forKey: "passcode_salt")
+    }
 
     /// Установлен ли код-пароль на этом устройстве. Лёгкая проверка
     /// наличия — не требует Face ID/Touch ID/пароля, даже несмотря на то,
