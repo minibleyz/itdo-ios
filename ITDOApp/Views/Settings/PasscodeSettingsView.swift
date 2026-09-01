@@ -26,10 +26,9 @@ enum PasscodeLock {
         // избавляет от лишнего промпта биометрии при каждой проверке кода
         // (иначе пришлось бы расшифровывать через Face ID и соль, и хэш).
         KeychainStore.set(salt, forKey: saltKey, deviceOnly: true)
-        // Хэш — самое чувствительное значение, поэтому храним его с
-        // привязкой к биометрии/паролю блокировки экрана (см.
-        // KeychainStore.setProtected): даже вытащенный из Keychain хэш
-        // нельзя прочитать без Face ID/Touch ID/пароля владельца.
+        // Хэш хранится через setProtected — обычное deviceOnly-хранение
+        // (см. комментарий в KeychainStore.swift, почему системный
+        // biometryCurrentSet-ACL был убран отсюда).
         KeychainStore.setProtected(hash(passcode, salt: salt), forKey: hashKey)
         clearLockout()
     }
@@ -39,10 +38,10 @@ enum PasscodeLock {
     /// счётчик попыток не нужен). Для основного экрана блокировки
     /// используйте verifyWithLockout(_:).
     ///
-    /// Внимание: чтение хэша защищено kSecAttrAccessControl, поэтому эта
-    /// проверка может показать системный промпт Face ID/Touch ID/пароля
-    /// поверх экрана ввода код-пароля — это ожидаемо и является частью
-    /// защиты, а не багом.
+    /// Чтение хэша (getProtected) больше НЕ показывает системный промпт
+    /// Face ID/Touch ID/пароля — см. комментарий у KeychainStore.setProtected.
+    /// Единственный явный биометрический промпт — кнопка Face ID/Touch ID
+    /// на самом экране блокировки (authenticateWithBiometrics ниже).
     static func verify(_ passcode: String) -> Bool {
         guard let salt = KeychainStore.get(forKey: saltKey),
               let storedHash = KeychainStore.getProtected(forKey: hashKey) else { return false }
