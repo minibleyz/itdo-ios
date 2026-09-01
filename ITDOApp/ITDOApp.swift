@@ -13,7 +13,22 @@ struct ITDOApp: App {
     // MARK: - Код-пароль (PasscodeLock) + размытие в App Switcher
     // isLocked стартует сразу true, если код-пароль включён — тогда холодный
     // запуск приложения тоже требует ввода кода, а не только возврат из фона.
-    @State private var isLocked = PasscodeLock.isEnabled
+    //
+    // migrateLegacyKeychainItemsIfNeeded() вызывается ДО инициализации
+    // isLocked/PasscodeLock.isEnabled ниже — на случай, если на устройстве
+    // остались старые Keychain-записи ("passcode_hash"/"passcode_salt") с
+    // прошлой версии приложения, защищённые системным biometryCurrentSet/
+    // devicePasscode ACL (см. подробный комментарий у самой функции в
+    // PasscodeSettingsView.swift). Сам вызов — просто SecItemDelete по
+    // старым именам ключей, не требует авторизации и не блокирует поток.
+    private static let didMigrateLegacyKeychain: Void = {
+        PasscodeLock.migrateLegacyKeychainItemsIfNeeded()
+    }()
+
+    @State private var isLocked: Bool = {
+        _ = ITDOApp.didMigrateLegacyKeychain
+        return PasscodeLock.isEnabled
+    }()
     @State private var showPrivacyBlur = false
     @State private var backgroundedAt: Date?
     @AppStorage("passcode_auto_lock_seconds") private var autoLockSeconds: Double = 0
