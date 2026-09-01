@@ -17,29 +17,46 @@ private func mimeType(forPathExtension ext: String) -> String {
     }
 }
 
+/// Все модальные экраны ленты сведены в один enum вместо семи параллельных
+/// `.sheet(isPresented:)`. Раньше, если два @State-флага выставлялись почти
+/// одновременно (например быстрый повторный тап), SwiftUI мог "запутаться"
+/// в нескольких одновременно активных .sheet-модификаторах на одном view —
+/// это давало серый экран или нереагирующие кнопки (лайк/комментарии/
+/// открытие поста). С одним `.sheet(item:)` такое физически невозможно:
+/// в любой момент показан максимум один экран.
+private enum FeedSheet: Identifiable {
+    case composer
+    case comments(Post)
+    case repost(Post)
+    case editPost(Post)
+    case bookmarks
+    case detail(Post)
+    case zoomImage(String)
+
+    var id: String {
+        switch self {
+        case .composer: return "composer"
+        case .comments(let p): return "comments-\(p.id)"
+        case .repost(let p): return "repost-\(p.id)"
+        case .editPost(let p): return "edit-\(p.id)"
+        case .bookmarks: return "bookmarks"
+        case .detail(let p): return "detail-\(p.id)"
+        case .zoomImage(let url): return "zoom-\(url)"
+        }
+    }
+}
+
 struct FeedView: View {
     @StateObject private var viewModel = FeedViewModel()
-    @State private var showComposer = false
-    @State private var selectedPost: Post?
-    @State private var showComments = false
-    @State private var showRepost = false
-    @State private var showEditPost = false
-    @State private var showBookmarks = false
-    @State private var showDetail = false
-    @State private var showActionMenu = false
+    @State private var activeSheet: FeedSheet?
+    /// Если из вложенного модального экрана (Закладки, Детали поста) нужно
+    /// открыть другой модальный экран (Комментарии/Репост), сначала
+    /// закрываем текущий (activeSheet = nil), и только в onDismiss —
+    /// когда предыдущий экран гарантированно уже убран с экрана —
+    /// показываем следующий. Иначе на мгновение "подменяется" контент
+    /// уже показанного sheet, что и вызывало серый экран/зависание.
+    @State private var pendingSheet: FeedSheet?
     @State private var openAuthorId: Int?
-    @State private var zoomImageUrl: String?
-    @State private var showZoomImage = false
-    // Открытие комментариев/репоста ИЗ вложенных экранов (Закладки, Детали
-    // поста), которые сами показаны как .sheet. Раньше эти экраны открывали
-    // комментарии/репост через ВТОРОЙ вложенный .sheet прямо внутри себя —
-    // sheet поверх sheet в SwiftUI регулярно даёт серый экран и зависание.
-    // Теперь вложенный экран просто закрывается, а после того как его
-    // анимация закрытия завершится (onDismiss), уже верхнеуровневый FeedView
-    // открывает комментарии/репост — сразу становится только один активный
-    // sheet за раз.
-    @State private var pendingCommentsPost: Post?
-    @State private var pendingRepostPost: Post?
     @EnvironmentObject private var session: SessionStore
     @EnvironmentObject private var composeTrigger: ComposeTrigger
 
@@ -77,38 +94,31 @@ struct FeedView: View {
                                     }, onBookmark: {
                                         Task { await viewModel.toggleBookmark(post) }
                                     }, onComment: {
-                                        selectedPost = post
-                                        showComments = true
+                                        activeSheet = .comments(post)
                                     }, onRepost: {
-                                        selectedPost = post
-                                        showRepost = true
+                                        activeSheet = .repost(post)
                                     }, onOpenAuthor: { userId in
                                         openAuthorId = userId
                                     }, onEdit: {
-                                        selectedPost = post
-                                        showEditPost = true
+                                        activeSheet = .editPost(post)
                                     }, onDelete: {
                                         Task { await viewModel.deletePost(post) }
                                     }, isMine: post.author?.id == session.currentUser?.id,
                                     onAuthorHidden: { authorId in
                                         viewModel.removePosts(byAuthor: authorId)
                                     }, onOpenImage: { url in
-                                        zoomImageUrl = url
-                                        showZoomImage = true
+                                        activeSheet = .zoomImage(url)
                                     }, onTapPost: {
-                                        selectedPost = post
-                                        showDetail = true
+                                        activeSheet = .detail(post)
                                     })
                                     .padding(.horizontal, 16)
                                     .contextMenu {
                                         Button("Комментарии") {
-                                            selectedPost = post
-                                            showComments = true
+                                            activeSheet = .comments(post)
                                         }
                                         if post.author?.id == session.currentUser?.id {
                                             Button("Редактировать") {
-                                                selectedPost = post
-                                                showEditPost = true
+                                                activeSheet = .editPost(post)
                                             }
                                             Button("Удалить", role: .destructive) {
                                                 Task { await viewModel.deletePost(post) }
@@ -135,7 +145,7 @@ struct FeedView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        showBookmarks = true
+                        activeSheet = .bookmarks
                     } label: {
                         Image(systemName: "bookmark")
                             .font(.subheadline.weight(.semibold))
@@ -152,58 +162,61 @@ struct FeedView: View {
                     }
                 }
             }
+            // Раньше стоял вне CompatNavigationStack — как модификатор ПОВЕРХ
+            // него, а не внутри content-замыкания. .navigationDestination
+            // работает только когда он потомок NavigationStack: снаружи
+            // preference-ключ некому подхватить, и пуш просто никогда не
+            // срабатывал — тап по автору/аватарке ничего не делал.
+            .compatNavigationDestination(item: $openAuthorId) { userId in
+                UserProfileView(userId: userId)
+            }
         }
         .task { if viewModel.posts.isEmpty { await viewModel.load() } }
         .onChange(of: composeTrigger.tick) { _, _ in
-            showComposer = true
+            activeSheet = .composer
         }
-        .sheet(isPresented: $showComposer) {
-            ComposerSheet(viewModel: viewModel, isPresented: $showComposer)
-        }
-        .sheet(isPresented: $showComments) {
-            if let post = selectedPost {
+        .sheet(item: $activeSheet, onDismiss: openPendingSheetIfNeeded) { sheet in
+            switch sheet {
+            case .composer:
+                ComposerSheet(viewModel: viewModel, isPresented: Binding(
+                    get: { activeSheet != nil },
+                    set: { if !$0 { activeSheet = nil } }
+                ))
+            case .comments(let post):
                 CommentsView(post: post)
-            }
-        }
-        .sheet(isPresented: $showRepost) {
-            if let post = selectedPost {
-                RepostView(post: post, isPresented: $showRepost)
-            }
-        }
-        .sheet(isPresented: $showEditPost) {
-            if let post = selectedPost {
-                EditPostView(post: post, isPresented: $showEditPost)
-            }
-        }
-        .sheet(isPresented: $showBookmarks, onDismiss: openPendingSheetIfNeeded) {
-            BookmarksView(
-                onOpenComments: { post in
-                    pendingCommentsPost = post
-                    showBookmarks = false
-                },
-                onOpenRepost: { post in
-                    pendingRepostPost = post
-                    showBookmarks = false
-                }
-            )
-        }
-        .sheet(isPresented: $showDetail, onDismiss: openPendingSheetIfNeeded) {
-            if let post = selectedPost {
+            case .repost(let post):
+                RepostView(post: post, isPresented: Binding(
+                    get: { activeSheet != nil },
+                    set: { if !$0 { activeSheet = nil } }
+                ))
+            case .editPost(let post):
+                EditPostView(post: post, isPresented: Binding(
+                    get: { activeSheet != nil },
+                    set: { if !$0 { activeSheet = nil } }
+                ))
+            case .bookmarks:
+                BookmarksView(
+                    onOpenComments: { post in
+                        pendingSheet = .comments(post)
+                        activeSheet = nil
+                    },
+                    onOpenRepost: { post in
+                        pendingSheet = .repost(post)
+                        activeSheet = nil
+                    }
+                )
+            case .detail(let post):
                 PostDetailView(
                     post: post,
                     viewModel: viewModel,
                     onOpenComments: { post in
-                        pendingCommentsPost = post
-                        showDetail = false
+                        pendingSheet = .comments(post)
+                        activeSheet = nil
                     }
                 )
+            case .zoomImage(let url):
+                ZoomableImageView(urlString: url)
             }
-        }
-        .compatNavigationDestination(item: $openAuthorId) { userId in
-            UserProfileView(userId: userId)
-        }
-        .sheet(isPresented: $showZoomImage) {
-            ZoomableImageView(urlString: zoomImageUrl)
         }
     }
 
@@ -225,7 +238,7 @@ struct FeedView: View {
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
         .contentShape(Rectangle())
-        .onTapGesture { showComposer = true }
+        .onTapGesture { activeSheet = .composer }
     }
 
     // 1:1 с `.tabs`/`.tab-btn` из app.css: подчёркивание снизу у активного
@@ -260,7 +273,7 @@ struct FeedView: View {
     }
 
     private var composerButton: some View {
-        Button { showComposer = true } label: {
+        Button { activeSheet = .composer } label: {
             Image(systemName: "square.and.pencil")
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(DesignTokens.textPrimary)
@@ -285,20 +298,14 @@ struct FeedView: View {
         }
     }
 
-    /// Вызывается в onDismiss у Закладок/Деталей поста. Если закрытие
-    /// произошло из-за запроса открыть комментарии/репост — открывает их
-    /// только СЕЙЧАС, когда предыдущий sheet уже полностью закрыт (иначе
-    /// на экране на мгновение оказываются два активных sheet одновременно,
-    /// что и вызывало серый экран/зависание).
+    /// Вызывается после закрытия любого модального экрана ленты. Если
+    /// закрытие произошло из-за запроса открыть другой экран (комментарии/
+    /// репост из Закладок/Деталей поста) — открывает его только СЕЙЧАС,
+    /// когда предыдущий гарантированно уже закрыт.
     private func openPendingSheetIfNeeded() {
-        if let post = pendingCommentsPost {
-            pendingCommentsPost = nil
-            selectedPost = post
-            showComments = true
-        } else if let post = pendingRepostPost {
-            pendingRepostPost = nil
-            selectedPost = post
-            showRepost = true
+        if let pending = pendingSheet {
+            pendingSheet = nil
+            activeSheet = pending
         }
     }
 }
