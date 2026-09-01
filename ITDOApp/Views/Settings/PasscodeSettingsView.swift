@@ -9,8 +9,39 @@ import UIKit
 /// в открытом виде. Используется для показа PasscodeUnlockView поверх
 /// UI, когда приложение возвращается из фона (см. ITDOApp.swift).
 enum PasscodeLock {
-    private static let hashKey = "passcode_hash"
-    private static let saltKey = "passcode_salt"
+    // v2: см. migrateLegacyKeychainItemsIfNeeded() ниже. У части пользователей,
+    // поставивших код-пароль ДО фикса зацикливания Face ID, в Keychain остаётся
+    // физический item под старыми именами ключей ("passcode_hash"/"passcode_salt"),
+    // записанный ещё со старым kSecAttrAccessControl(.biometryCurrentSet, .or,
+    // .devicePasscode). Обновление кода приложения НЕ переписывает уже
+    // существующие Keychain-записи — SecItemAdd/SecItemDelete происходят только
+    // при следующем set(passcode:), а не при обновлении билда. Поэтому такие
+    // устройства продолжали получать системный биометрический/passcode-промпт
+    // при каждом verify(), даже на билде с убранным ACL в коде. Переезд на новые
+    // имена ключей гарантирует, что старая защищённая запись больше никогда не
+    // будет прочитана этим кодом.
+    private static let hashKey = "passcode_hash_v2"
+    private static let saltKey = "passcode_salt_v2"
+    private static let legacyHashKey = "passcode_hash"
+    private static let legacySaltKey = "passcode_salt"
+
+    /// Удаляет старые (до-фикс) Keychain-записи, если они остались с прошлой
+    /// версии приложения. SecItemDelete не требует расшифровки/авторизации
+    /// защищённого блоба (в отличие от чтения), поэтому этот вызов безопасен
+    /// и не покажет системный промпт Face ID/пароля — можно звать на каждом
+    /// старте приложения, он идемпотентен. Код-пароль по новым ключам (если
+    /// уже был установлен на этом билде) не затрагивается.
+    ///
+    /// Побочный эффект: пользователи, у которых код-пароль был установлен ДО
+    /// этой миграции, увидят экран первичной настройки код-пароля заново —
+    /// это ожидаемо и безопасно (сам PIN никогда не хранился в открытом виде,
+    /// восстановить его из старого хэша без повторного ввода невозможно, а
+    /// значит и мигрировать его на новый ключ, не читая старую запись, тоже
+    /// нельзя).
+    static func migrateLegacyKeychainItemsIfNeeded() {
+        KeychainStore.remove(forKey: legacyHashKey)
+        KeychainStore.remove(forKey: legacySaltKey)
+    }
 
     /// Установлен ли код-пароль на этом устройстве. Лёгкая проверка
     /// наличия — не требует Face ID/Touch ID/пароля, даже несмотря на то,
