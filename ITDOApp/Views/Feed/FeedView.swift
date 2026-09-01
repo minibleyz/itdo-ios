@@ -175,6 +175,17 @@ struct FeedView: View {
         .onChange(of: composeTrigger.tick) { _, _ in
             activeSheet = .composer
         }
+        // Share Extension → App Group → ITDOApp.swift рассылает это
+        // уведомление при возврате на передний план, если пользователь
+        // расшарил текст/ссылку в ITDO из другого приложения (см.
+        // ShareExtension/ShareViewController.swift). Открываем композер
+        // с уже подставленным текстом — как ведёт себя веб-версия при
+        // переходе по "Поделиться" ссылке.
+        .onReceive(NotificationCenter.default.publisher(for: .pendingShareReceived)) { notification in
+            guard let text = notification.object as? String, !text.isEmpty else { return }
+            viewModel.composerText = text
+            activeSheet = .composer
+        }
         .sheet(item: $activeSheet, onDismiss: openPendingSheetIfNeeded) { sheet in
             switch sheet {
             case .composer:
