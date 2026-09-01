@@ -102,158 +102,170 @@ struct ClipPlayerPage: View {
     @State private var duration: Double = 1
     @State private var timeObserver: Any?
 
-    // Навигация к профилю автора
+    // Навигация к профилю автора — было compatNavigationDestination(item:),
+    // но эта страница больше не имеет собственного NavigationStack (см. ниже),
+    // поэтому теперь просто fullScreenCover.
     @State private var openAuthorId: Int?
     // Комментарии
     @State private var showComments = false
 
     var body: some View {
-        CompatNavigationStack {
-            GeometryReader { geo in
-                ZStack {
-                    Color.black
+        // ВАЖНО: раньше здесь был свой CompatNavigationStack на каждую
+        // страницу клипа — но ClipsView уже оборачивает всю ленту клипов
+        // в CompatNavigationStack. Вложенный NavigationStack/NavigationView
+        // внутри TabView(.page) (свайп клипов) — баг SwiftUI, из-за которого
+        // страница рендерилась чёрным экраном. Убрано.
+        GeometryReader { geo in
+            ZStack {
+                Color.black
 
-                    if let player {
-                        ClipAVPlayerView(player: player)
-                            .ignoresSafeArea()
-                            .simultaneousGesture(
-                                TapGesture().onEnded { togglePlayPause() }
-                            )
-                    }
+                if let player {
+                    ClipAVPlayerView(player: player)
+                        .ignoresSafeArea()
+                        .simultaneousGesture(
+                            TapGesture().onEnded { togglePlayPause() }
+                        )
+                }
 
-                    // Gradient bottom overlay
-                    LinearGradient(
-                        colors: [.clear, .black.opacity(0.75)],
-                        startPoint: .center,
-                        endPoint: .bottom
-                    )
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
+                // Gradient bottom overlay
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.75)],
+                    startPoint: .center,
+                    endPoint: .bottom
+                )
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
 
-                    VStack {
-                        Spacer()
-                        HStack(alignment: .bottom) {
-                            // Bottom-left: author + views
-                            VStack(alignment: .leading, spacing: 6) {
-                                Button {
-                                    openAuthorId = clip.userId
-                                } label: {
-                                    HStack(spacing: 8) {
-                                        if let avatar = clip.avatar, let url = URL.secure(avatar) {
-                                            AsyncImage(url: url) { phase in
-                                                if let img = phase.image {
-                                                    img.resizable().scaledToFill()
-                                                } else {
-                                                    Circle().fill(.white.opacity(0.2))
-                                                }
+                VStack {
+                    Spacer()
+                    HStack(alignment: .bottom) {
+                        // Bottom-left: author + views
+                        VStack(alignment: .leading, spacing: 6) {
+                            Button {
+                                openAuthorId = clip.userId
+                            } label: {
+                                HStack(spacing: 8) {
+                                    if let avatar = clip.avatar, let url = URL.secure(avatar) {
+                                        AsyncImage(url: url) { phase in
+                                            if let img = phase.image {
+                                                img.resizable().scaledToFill()
+                                            } else {
+                                                Circle().fill(.white.opacity(0.2))
                                             }
-                                            .frame(width: 32, height: 32)
-                                            .clipShape(Circle())
                                         }
-                                        Text("@\(clip.username)")
-                                            .font(.system(size: 14, weight: .semibold))
-                                            .foregroundStyle(.white)
-                                            .shadow(radius: 2)
+                                        .frame(width: 32, height: 32)
+                                        .clipShape(Circle())
                                     }
-                                }
-                                .buttonStyle(.plain)
-
-                                // Просмотры
-                                HStack(spacing: 4) {
-                                    Image(systemName: "eye.fill")
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(.white.opacity(0.7))
-                                    Text("\(clip.viewsCount)")
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(.white.opacity(0.7))
-                                }
-
-                                if let desc = clip.description, !desc.isEmpty {
-                                    Text(desc)
-                                        .font(.system(size: 13))
-                                        .foregroundStyle(.white.opacity(0.9))
-                                        .lineLimit(3)
-                                        .padding(.top, 4)
-                                }
-                            }
-                            .padding(.bottom, 16)
-                            .padding(.leading, 16)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
-                            // Right action panel
-                            VStack(spacing: 20) {
-                                // Лайк
-                                ClipActionButton(
-                                    icon: clip.liked ? "hand.thumbsup.fill" : "hand.thumbsup",
-                                    label: "\(clip.likesCount)",
-                                    color: clip.liked ? DesignTokens.accentPrimary : .white,
-                                    action: onLike
-                                )
-                                // Комментарии
-                                ClipActionButton(
-                                    icon: "bubble.left.fill",
-                                    label: "\(clip.commentsCount)",
-                                    color: .white,
-                                    action: { showComments = true }
-                                )
-                                // Поделиться
-                                ClipActionButton(
-                                    icon: "arrowshape.turn.up.right.fill",
-                                    label: "Поделиться",
-                                    color: .white,
-                                    action: { shareClip() }
-                                )
-                                // Скачать
-                                ClipActionButton(
-                                    icon: "arrow.down.circle.fill",
-                                    label: "Скачать",
-                                    color: .white,
-                                    action: { downloadClip() }
-                                )
-                                // Mute
-                                Button {
-                                    isMuted.toggle()
-                                    player?.isMuted = isMuted
-                                } label: {
-                                    Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                                        .font(.system(size: 22))
+                                    Text("@\(clip.username)")
+                                        .font(.system(size: 14, weight: .semibold))
                                         .foregroundStyle(.white)
-                                        .shadow(radius: 4)
+                                        .shadow(radius: 2)
                                 }
                             }
-                            .padding(.bottom, 16)
-                            .padding(.trailing, 16)
-                        }
+                            .buttonStyle(.plain)
 
-                        // Progress bar
-                        ZStack(alignment: .leading) {
-                            Rectangle()
-                                .fill(.white.opacity(0.3))
-                                .frame(height: 3)
-                            Rectangle()
-                                .fill(.white)
-                                .frame(width: max(0, (progress / max(duration, 0.001)) * geo.size.width), height: 3)
+                            // Просмотры
+                            HStack(spacing: 4) {
+                                Image(systemName: "eye.fill")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.white.opacity(0.7))
+                                Text("\(clip.viewsCount)")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.white.opacity(0.7))
+                            }
+
+                            if let desc = clip.description, !desc.isEmpty {
+                                Text(desc)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.white.opacity(0.9))
+                                    .lineLimit(3)
+                                    .padding(.top, 4)
+                            }
                         }
-                        .padding(.bottom, 8)
-                        .onTapGesture { location in
-                            let ratio = location.x / geo.size.width
-                            let seekTime = CMTime(seconds: ratio * duration, preferredTimescale: 600)
-                            player?.seek(to: seekTime)
+                        .padding(.bottom, 16)
+                        .padding(.leading, 16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        // Right action panel
+                        VStack(spacing: 20) {
+                            // Лайк
+                            ClipActionButton(
+                                icon: clip.liked ? "hand.thumbsup.fill" : "hand.thumbsup",
+                                label: "\(clip.likesCount)",
+                                color: clip.liked ? DesignTokens.accentPrimary : .white,
+                                action: onLike
+                            )
+                            // Комментарии
+                            ClipActionButton(
+                                icon: "bubble.left.fill",
+                                label: "\(clip.commentsCount)",
+                                color: .white,
+                                action: { showComments = true }
+                            )
+                            // Поделиться
+                            ClipActionButton(
+                                icon: "arrowshape.turn.up.right.fill",
+                                label: "Поделиться",
+                                color: .white,
+                                action: { shareClip() }
+                            )
+                            // Скачать
+                            ClipActionButton(
+                                icon: "arrow.down.circle.fill",
+                                label: "Скачать",
+                                color: .white,
+                                action: { downloadClip() }
+                            )
+                            // Mute
+                            Button {
+                                isMuted.toggle()
+                                player?.isMuted = isMuted
+                            } label: {
+                                Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                                    .font(.system(size: 22))
+                                    .foregroundStyle(.white)
+                                    .shadow(radius: 4)
+                            }
                         }
+                        .padding(.bottom, 16)
+                        .padding(.trailing, 16)
                     }
 
-                    // Center play/pause indicator
-                    if !isPlaying {
-                        Image(systemName: "play.fill")
-                            .font(.system(size: 48))
-                            .foregroundStyle(.white.opacity(0.85))
-                            .shadow(radius: 8)
-                            .transition(.opacity)
+                    // Progress bar
+                    ZStack(alignment: .leading) {
+                        Rectangle()
+                            .fill(.white.opacity(0.3))
+                            .frame(height: 3)
+                        Rectangle()
+                            .fill(.white)
+                            .frame(width: max(0, (progress / max(duration, 0.001)) * geo.size.width), height: 3)
+                    }
+                    .padding(.bottom, 8)
+                    .onTapGesture { location in
+                        let ratio = location.x / geo.size.width
+                        let seekTime = CMTime(seconds: ratio * duration, preferredTimescale: 600)
+                        player?.seek(to: seekTime)
                     }
                 }
+
+                // Center play/pause indicator
+                if !isPlaying {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 48))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .shadow(radius: 8)
+                        .transition(.opacity)
+                }
             }
-            .compatNavigationDestination(item: $openAuthorId) { userId in
+        }
+        .fullScreenCover(item: $openAuthorId) { userId in
+            CompatNavigationStack {
                 UserProfileView(userId: userId)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Закрыть") { openAuthorId = nil }
+                        }
+                    }
             }
         }
         .sheet(isPresented: $showComments) {
