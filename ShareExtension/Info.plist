@@ -40,8 +40,10 @@
 				<integer>4</integer>
 			</dict>
 		</dict>
-		<key>NSExtensionMainStoryboard</key>
-		<string>MainInterface</string>
+		<!-- SwiftUI-экран вместо Storyboard: ShareViewController.swift сам
+		     хостит SwiftUI-вью через UIHostingController. -->
+		<key>NSExtensionPrincipalClass</key>
+		<string>$(PRODUCT_MODULE_NAME).ShareViewController</string>
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.share-services</string>
 	</dict>
