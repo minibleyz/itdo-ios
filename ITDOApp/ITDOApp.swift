@@ -127,6 +127,12 @@ struct ITDOApp: App {
                     break
                 }
             }
+            // Face ID зациклился (см. PasscodeLock.isBiometricSafeMode) —
+            // синхронизируем тумблер в настройках, чтобы он не показывал
+            // "включён", пока биометрия реально не вызывается.
+            .onReceive(NotificationCenter.default.publisher(for: .passcodeBiometricSafeModeEnabled)) { _ in
+                biometricsEnabled = false
+            }
         }
     }
 }

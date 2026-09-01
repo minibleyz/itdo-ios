@@ -105,6 +105,11 @@ enum PasscodeLock {
         }
         if verify(passcode) {
             clearLockout()
+            // Успешный ручной вход по коду — легитимная разблокировка,
+            // счётчик срабатываний Face ID тоже можно обнулить (но сам
+            // safe mode, если он уже включён, снимается только вручную
+            // в настройках — см. exitBiometricSafeMode()).
+            resetBiometricTriggerCount()
             return .success
         }
         failedAttempts += 1
@@ -133,17 +138,96 @@ enum PasscodeLock {
         }
     }
 
+    // MARK: - Защита от зацикливания Face ID
+
+    /// Баг: если экран блокировки пересоздаётся часто (например, из-за
+    /// того, что scenePhase дёргается между .active/.inactive во время
+    /// записи экрана), PasscodeUnlockView.onAppear запускал Face ID
+    /// заново при каждом новом инстансе вью, а старый запрос к
+    /// LocalAuthentication/Keychain мог ещё не завершиться — получался
+    /// вечный цикл промптов. Защищаемся на двух уровнях:
+    /// 1) не даём стартовать второй evaluatePolicy, пока первый не
+    ///    завершился (isEvaluatingBiometrics);
+    /// 2) считаем срабатывания (не только неудачи) и после
+    ///    maxBiometricTriggers подряд принудительно уходим в safe mode —
+    ///    биометрия выключается, остаётся только код-пароль.
+    static let maxBiometricTriggers = 10
+
+    private static let biometricTriggerCountKey = "faceid_trigger_count"
+    private static let biometricSafeModeKey = "faceid_safe_mode"
+    private static var isEvaluatingBiometrics = false
+
+    /// true, если Face ID принудительно отключён из-за подозрения на
+    /// зацикливание. Пока это так, экран блокировки не показывает кнопку
+    /// биометрии и не вызывает authenticateWithBiometrics — только код-пароль.
+    static private(set) var isBiometricSafeMode: Bool {
+        get { UserDefaults.standard.bool(forKey: biometricSafeModeKey) }
+        set { UserDefaults.standard.set(newValue, forKey: biometricSafeModeKey) }
+    }
+
+    private static var biometricTriggerCount: Int {
+        get { UserDefaults.standard.integer(forKey: biometricTriggerCountKey) }
+        set { UserDefaults.standard.set(newValue, forKey: biometricTriggerCountKey) }
+    }
+
+    static func resetBiometricTriggerCount() {
+        biometricTriggerCount = 0
+    }
+
+    /// Явный выход из safe mode — вызывается только когда пользователь
+    /// сам заново включает Face ID в настройках (PasscodeSettingsView).
+    static func exitBiometricSafeMode() {
+        isBiometricSafeMode = false
+        resetBiometricTriggerCount()
+    }
+
+    private static func enterBiometricSafeMode() {
+        isBiometricSafeMode = true
+        biometricTriggerCount = 0
+        NotificationCenter.default.post(name: .passcodeBiometricSafeModeEnabled, object: nil)
+    }
+
     static func authenticateWithBiometrics(reason: String, completion: @escaping (Bool) -> Void) {
+        guard !isBiometricSafeMode else {
+            completion(false)
+            return
+        }
+        // Уже идёт проверка — игнорируем повторный вызов вместо того,
+        // чтобы плодить параллельные запросы к LAContext/Keychain.
+        guard !isEvaluatingBiometrics else { return }
+
+        biometricTriggerCount += 1
+        if biometricTriggerCount >= maxBiometricTriggers {
+            enterBiometricSafeMode()
+            completion(false)
+            return
+        }
+
         let context = LAContext()
         var error: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
             completion(false)
             return
         }
+
+        isEvaluatingBiometrics = true
         context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { success, _ in
-            DispatchQueue.main.async { completion(success) }
+            DispatchQueue.main.async {
+                isEvaluatingBiometrics = false
+                if success {
+                    resetBiometricTriggerCount()
+                }
+                completion(success)
+            }
         }
     }
+}
+
+extension Notification.Name {
+    /// Постится, когда Face ID принудительно уходит в safe mode из-за
+    /// зацикливания — слушатель (ITDOApp) должен выключить тумблер
+    /// "passcode_biometrics_enabled", чтобы UI не расходился с реальностью.
+    static let passcodeBiometricSafeModeEnabled = Notification.Name("passcodeBiometricSafeModeEnabled")
 }
 
 /// Тактильная отдача для экрана код-пароля — вынесено в один enum, чтобы
@@ -178,6 +262,7 @@ struct PasscodeSettingsView: View {
     @AppStorage("passcode_auto_lock_seconds") private var autoLockSeconds: Double = 0
     @State private var isEnabled = PasscodeLock.isEnabled
     @State private var presentedSheet: Sheet?
+    @State private var isBiometricSafeMode = PasscodeLock.isBiometricSafeMode
 
     private enum Sheet: Int, Identifiable {
         case create, changeVerify, changeSetup, disableVerify
@@ -215,9 +300,24 @@ struct PasscodeSettingsView: View {
 
                     if PasscodeLock.biometryAvailable {
                         Section {
-                            Toggle("Разблокировать через \(PasscodeLock.biometryTypeName)", isOn: $biometricsEnabled)
+                            Toggle("Разблокировать через \(PasscodeLock.biometryTypeName)", isOn: Binding(
+                                get: { biometricsEnabled && !isBiometricSafeMode },
+                                set: { newValue in
+                                    biometricsEnabled = newValue
+                                    if newValue {
+                                        // Пользователь сам возвращает Face ID —
+                                        // снимаем safe mode и сбрасываем счётчик.
+                                        PasscodeLock.exitBiometricSafeMode()
+                                        isBiometricSafeMode = false
+                                    }
+                                }
+                            ))
                         } footer: {
-                            Text("Код-пароль всё равно можно будет ввести вручную, если \(PasscodeLock.biometryTypeName) не сработает.")
+                            if isBiometricSafeMode {
+                                Text("\(PasscodeLock.biometryTypeName) был автоматически отключён: система обнаружила подозрительно частые повторные запросы биометрии (например, из-за записи экрана). Включите переключатель заново, чтобы возобновить работу \(PasscodeLock.biometryTypeName).")
+                            } else {
+                                Text("Код-пароль всё равно можно будет ввести вручную, если \(PasscodeLock.biometryTypeName) не сработает.")
+                            }
                         }
                     }
 
@@ -242,6 +342,9 @@ struct PasscodeSettingsView: View {
         }
         .navigationTitle("Код-пароль")
         .navigationBarTitleDisplayMode(.inline)
+        .onReceive(NotificationCenter.default.publisher(for: .passcodeBiometricSafeModeEnabled)) { _ in
+            isBiometricSafeMode = true
+        }
         .fullScreenCover(item: $presentedSheet) { sheet in
             switch sheet {
             case .create:
@@ -406,6 +509,13 @@ struct PasscodeUnlockView: View {
     @State private var now = Date()
     @State private var showForgotConfirm = false
 
+    /// Face ID реально доступен для показа/автозапуска только пока не
+    /// сработал safe mode (см. PasscodeLock) — иначе именно повторный
+    /// вызов из onAppear при пересоздании этой вью и вызывал зацикливание.
+    private var biometricsUsable: Bool {
+        allowBiometrics && PasscodeLock.biometryAvailable && !PasscodeLock.isBiometricSafeMode
+    }
+
     private var isLockedOut: Bool {
         guard let lockoutUntil else { return false }
         return now < lockoutUntil
@@ -460,7 +570,7 @@ struct PasscodeUnlockView: View {
                 PasscodeNumpad(
                     onDigit: append,
                     onDelete: { if !code.isEmpty { code.removeLast() } },
-                    showBiometrics: allowBiometrics && PasscodeLock.biometryAvailable,
+                    showBiometrics: biometricsUsable,
                     biometryIcon: PasscodeLock.biometryTypeName == "Touch ID" ? "touchid" : "faceid",
                     onBiometrics: runBiometrics
                 )
@@ -484,7 +594,7 @@ struct PasscodeUnlockView: View {
             }
         }
         .onAppear {
-            if allowBiometrics && PasscodeLock.biometryAvailable && !attemptedBiometrics && !isLockedOut {
+            if biometricsUsable && !attemptedBiometrics && !isLockedOut {
                 attemptedBiometrics = true
                 runBiometrics()
             }
@@ -541,6 +651,7 @@ struct PasscodeUnlockView: View {
     }
 
     private func runBiometrics() {
+        guard biometricsUsable else { return }
         PasscodeLock.authenticateWithBiometrics(reason: "Разблокировать ITDO") { success in
             if success {
                 PasscodeHaptics.success()
