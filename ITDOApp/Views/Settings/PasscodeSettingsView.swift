@@ -204,6 +204,12 @@ enum PasscodeLock {
         }
 
         let context = LAContext()
+        // Пустой fallback-title убирает системную кнопку "Enter Passcode":
+        // после неудачного/отменённого Face ID iOS никогда не предложит
+        // ввести код блокировки ТЕЛЕФОНА — единственный fallback остаётся
+        // на стороне приложения (PasscodeUnlockView), как и было запрошено.
+        context.localizedFallbackTitle = ""
+
         var error: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
             completion(false)
