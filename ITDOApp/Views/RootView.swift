@@ -14,6 +14,10 @@ struct RootView: View {
     // индикатора офлайна не было вовсе. Теперь используем общий
     // NetworkMonitor.shared, запущенный ещё в ITDOApp.swift.
     private var isOffline: Bool { !networkMonitor.isOnline }
+    // Показывается сразу после возврата сети, пока идёт досинхронизация
+    // (профиль, счётчик уведомлений и т.п.) — баннер "Нет соединения" не
+    // исчезает мгновенно, а на это время меняет текст на "Обновление...".
+    @State private var isReconnecting = false
 
     var body: some View {
         Group {
@@ -40,14 +44,14 @@ struct RootView: View {
                             .environmentObject(composeTrigger)
                             .tabItem {
                                 Image(systemName: selection == 0 ? "house.fill" : "house")
-                                Text(isOffline ? "Соединение..." : "Лента")
+                                Text("Лента")
                             }
                             .tag(0)
 
                         ExploreView()
                             .tabItem {
                                 Image(systemName: "magnifyingglass")
-                                Text(isOffline ? "Соединение..." : "Поиск")
+                                Text("Поиск")
                             }
                             .tag(1)
 
@@ -55,14 +59,14 @@ struct RootView: View {
                             .badge(notificationsBadge.unreadCount > 0 && selection != 2 ? notificationsBadge.unreadCount : 0)
                             .tabItem {
                                 Image(systemName: selection == 2 ? "bell.fill" : "bell")
-                                Text(isOffline ? "Соединение..." : "Увед.")
+                                Text("Увед.")
                             }
                             .tag(2)
 
                         MessagesView()
                             .tabItem {
                                 Image(systemName: "bubble.left")
-                                Text(isOffline ? "Соединение..." : "Сообщения")
+                                Text("Сообщения")
                             }
                             .tag(3)
 
@@ -70,28 +74,38 @@ struct RootView: View {
                             .id(moreViewId)
                             .tabItem {
                                 Image(systemName: "ellipsis")
-                                Text(isOffline ? "Соединение..." : "Ещё")
+                                Text("Ещё")
                             }
                             .tag(4)
                     }
                     .tint(DesignTokens.accentPrimary)
 
-                    // Офлайн banner
-                    if isOffline {
+                    // Офлайн / реконнект banner. Показывается пока нет сети,
+                    // а после её возврата ещё держится на время досинхронизации
+                    // (isReconnecting), чтобы не создавать впечатление, будто
+                    // "Нет соединения" просто исчезло само по себе.
+                    if isOffline || isReconnecting {
                         HStack(spacing: 8) {
-                            Image(systemName: "wifi.slash")
-                                .font(.system(size: 12, weight: .semibold))
-                            Text("Нет соединения")
+                            if isReconnecting {
+                                ProgressView()
+                                    .tint(.white)
+                                    .scaleEffect(0.7)
+                            } else {
+                                Image(systemName: "wifi.slash")
+                                    .font(.system(size: 12, weight: .semibold))
+                            }
+                            Text(isReconnecting ? "Обновление..." : "Нет соединения")
                                 .font(.system(size: 12, weight: .semibold))
                         }
                         .foregroundStyle(.white)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 6)
-                        .background(Color.orange)
+                        .background(isReconnecting ? DesignTokens.accentPrimary : Color.orange)
                         .clipShape(Capsule())
                         .padding(.top, 4)
                         .transition(.move(edge: .top).combined(with: .opacity))
                         .animation(.spring(), value: isOffline)
+                        .animation(.easeInOut, value: isReconnecting)
                     }
 
                     AnnouncementsOverlay()
@@ -103,11 +117,21 @@ struct RootView: View {
                     }
                 }
                 .onChange(of: networkMonitor.isOnline) { _, online in
-                    // Сеть вернулась — досинхронизируем профиль, если в
-                    // прошлый раз restoreSession()/refreshProfile() не смогли
-                    // достучаться до сервера из-за offline.
-                    if online && session.isOfflineSession {
-                        Task { await session.refreshProfile() }
+                    // Сеть вернулась — досинхронизируем всё, что могло не
+                    // обновиться, пока были офлайн (профиль, если
+                    // restoreSession()/refreshProfile() в прошлый раз не
+                    // достучались до сервера, и счётчик непрочитанных).
+                    // Баннер держим видимым (текст "Обновление...") на всё
+                    // время этой синхронизации, а не прячем сразу.
+                    guard online else { return }
+                    Task {
+                        isReconnecting = true
+                        async let profileRefresh: Void = session.isOfflineSession
+                            ? session.refreshProfile()
+                            : ()
+                        async let badgeRefresh: Void = notificationsBadge.refreshUnreadCount()
+                        _ = await (profileRefresh, badgeRefresh)
+                        isReconnecting = false
                     }
                 }
             } else {
