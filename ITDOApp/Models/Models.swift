@@ -974,7 +974,13 @@ struct QuestsResponse: Decodable {
     let quests: [Quest]
 }
 
-// MARK: - Nuksta
+// MARK: - Nuksta / ITDO Pro
+//
+// "Nuksta" — внутреннее (бэкендное) имя этой подписки, в API и полях модели
+// (`is_nuksta`, nuksta/*.php) оно остаётся как есть. В UI и в вебе фича уже
+// давно называется "ITDO Pro" — раньше в iOS-клиенте это несоответствие не
+// было доведено до конца (экран всё ещё показывал устаревшее "ИТДО ШЛЁП" и
+// один захардкоженный тариф вместо четырёх, которые реально продаёт бэкенд).
 
 struct NukstaResponse: Decodable {
     let isActive: Bool
@@ -991,17 +997,67 @@ struct NukstaResponse: Decodable {
     var subscribed: Bool { isActive }
 }
 
-/// Static plan info — backend has no dedicated endpoint the app currently calls for this,
-/// so the values mirror api/config.php (NUKSTA_PRICE_COINS / NUKSTA_DAYS).
+/// Тарифы ITDO Pro — 1:1 со значениями NUKSTA_DAYS*/NUKSTA_PRICE_COINS* в
+/// api/config.php и с объектом NUKSTA_PLANS в assets/js/app.js. Бэкенд
+/// (nuksta/subscribe_coins.php) принимает "plan" одним из этих id и сам
+/// проверяет цену/срок — эти значения только для отображения UI.
+enum NukstaPlanID: String, CaseIterable, Identifiable {
+    case twoWeeks = "2w"
+    case month
+    case halfYear = "halfyear"
+    case year
+
+    var id: String { rawValue }
+
+    var shortLabel: String {
+        switch self {
+        case .twoWeeks: return "14 дней"
+        case .month: return "Месяц"
+        case .halfYear: return "Полгода"
+        case .year: return "Год"
+        }
+    }
+
+    var days: Int {
+        switch self {
+        case .twoWeeks: return 14
+        case .month: return 30
+        case .halfYear: return 182
+        case .year: return 365
+        }
+    }
+
+    var priceCoins: Int {
+        switch self {
+        case .twoWeeks: return 400
+        case .month: return 2000
+        case .halfYear: return 3250
+        case .year: return 1500
+        }
+    }
+}
+
+/// Static plan info — mirrors NUKSTA_PLANS in assets/js/app.js / api/config.php.
 enum NukstaPlan {
-    static let priceCoins = 400
-    static let days = 30
+    static let plans: [NukstaPlanID] = NukstaPlanID.allCases
+    static let defaultPlan: NukstaPlanID = .month
+
+    /// Оставлено для обратной совместимости со старыми вызовами —
+    /// соответствует тарифу по умолчанию ("Месяц").
+    static var priceCoins: Int { defaultPlan.priceCoins }
+    static var days: Int { defaultPlan.days }
+
+    /// Фичи подписки — 1:1 со списком в loadNuksta()/nuksta-feature-list
+    /// (assets/js/app.js): раньше здесь был отдельный, не совпадающий с
+    /// вебом список ("Без рекламы", "Эксклюзивные стикеры" и т.п., которых
+    /// ITDO Pro на самом деле не даёт).
     static let features = [
-        "Без рекламы",
-        "ИТДО ШЛЁП тема",
-        "Приоритет в ленте",
-        "Эксклюзивные стикеры",
-        "Расширенная статистика",
+        "Уникальный цвет ника и пин поддерживателя",
+        "Загрузка видео в постах",
+        "Музыка в постах",
+        "+5 доп. квестов каждый день",
+        "ИИ-агент Bleyzos AI Gorn 2.6",
+        "Распознавание фото агентом",
     ]
 }
 
