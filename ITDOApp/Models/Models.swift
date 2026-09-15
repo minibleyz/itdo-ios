@@ -1729,3 +1729,44 @@ struct Announcement: Codable, Identifiable, Equatable {
 struct AnnouncementsResponse: Decodable {
     let announcements: [Announcement]
 }
+
+// MARK: - Usernames (NFT-стиль доп. юзернеймы)
+
+/// Ответ GET usernames/list.php — основной username, купленные дополнительные,
+/// текущая цена покупки и баланс Шлёпов. 1:1 с loadExtraUsernames() в вебе.
+struct UsernamesListResponse: Decodable {
+    let username: String
+    let extraUsernames: [String]
+    let price: Int
+    let balance: Int
+
+    enum CodingKeys: String, CodingKey {
+        case username, price, balance
+        case extraUsernames = "extra_usernames"
+    }
+}
+
+/// Ответ POST usernames/buy.php.
+struct BuyUsernameResponse: Decodable {
+    let ok: Bool
+    let username: String
+    let balance: Int
+    let extraUsernames: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case ok, username, balance
+        case extraUsernames = "extra_usernames"
+    }
+}
+
+/// Ответ POST usernames/switch.php — делает купленный доп. юзернейм основным.
+struct SwitchUsernameResponse: Decodable {
+    let ok: Bool
+    let username: String
+    let extraUsernames: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case ok, username
+        case extraUsernames = "extra_usernames"
+    }
+}
