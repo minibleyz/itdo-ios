@@ -23,6 +23,11 @@ struct SettingsView: View {
                                 settingsRow(icon: "person.crop.circle", title: "Редактировать профиль", subtitle: "Имя, аватар, баннер")
                             }
                             NavigationLink {
+                                UsernamesView()
+                            } label: {
+                                settingsRow(icon: "at.circle", title: "Доп. юзернеймы", subtitle: "Купить и переключить @хендл")
+                            }
+                            NavigationLink {
                                 VerificationView()
                             } label: {
                                 settingsRow(icon: "checkmark.seal", title: "Верификация", subtitle: "Синяя галочка")
