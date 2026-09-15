@@ -737,7 +737,11 @@ final class APIClient {
         // /users/profile.php возвращает {"user": {...}} — decode падал на
         // каждой попытке открыть чужой профиль ("не удалось разобрать").
         struct Resp: Decodable { let user: User }
-        let resp: Resp = try await request("users/profile.php", query: ["username": username])
+        // БАГ БЫЛ ЗДЕСЬ: слался query-параметр "username", а users/profile.php
+        // на бэкенде читает только $_GET['id'] / $_GET['user_id'] — поэтому
+        // открытие профиля по @юзернейму (в т.ч. по купленным доп.
+        // юзернеймам после фикса на бэкенде) всегда падало с 404.
+        let resp: Resp = try await request("users/profile.php", query: ["id": username])
         return resp.user
     }
 
@@ -808,6 +812,24 @@ final class APIClient {
     func fetchSessions() async throws -> SessionsResponse {
         struct Resp: Decodable { let sessions: [Session] }
         return try await request("auth/sessions.php")
+    }
+
+    // MARK: - Usernames (доп. NFT-стиль юзернеймы)
+    //
+    // 1:1 с loadExtraUsernames()/buyExtraUsername()/switchExtraUsername()
+    // в assets/js/app.js веб-клиента. Доп. юзернейм бронирует имя точно так
+    // же, как основной username — см. isUsernameTakenAnywhere() на бэкенде.
+
+    func fetchUsernames() async throws -> UsernamesListResponse {
+        try await request("usernames/list.php")
+    }
+
+    func buyExtraUsername(_ username: String) async throws -> BuyUsernameResponse {
+        try await request("usernames/buy.php", method: .post, body: ["username": AnyEncodable(username)])
+    }
+
+    func switchExtraUsername(_ username: String) async throws -> SwitchUsernameResponse {
+        try await request("usernames/switch.php", method: .post, body: ["username": AnyEncodable(username)])
     }
 
     func switchAccount(token: String) async throws {
