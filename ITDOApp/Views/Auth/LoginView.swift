@@ -79,11 +79,9 @@ struct LoginView: View {
             DesignTokens.backgroundSecondary.ignoresSafeArea()
 
             VStack(alignment: .leading, spacing: 28) {
-                // Логотип
+                // Слоган (надпись ITDO убрана — оставлено только приветствие,
+                // которое отображается ниже в authForm)
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("ITDO")
-                        .font(.system(size: 52, weight: .black, design: .rounded))
-                        .foregroundStyle(DesignTokens.textPrimary)
                     Text("Социальная сеть нового поколения —\nобщайся, делись, вдохновляй")
                         .font(.system(size: 17))
                         .foregroundStyle(DesignTokens.textPrimary.opacity(0.8))
@@ -118,10 +116,8 @@ struct LoginView: View {
     // MARK: - Mobile logo (phone only)
 
     private var mobileLogoHeader: some View {
+        // Надпись ITDO убрана — оставлен только слоган, приветствие ниже в authForm.
         VStack(spacing: 6) {
-            Text("ITDO")
-                .font(.system(size: 38, weight: .black, design: .rounded))
-                .foregroundStyle(DesignTokens.textPrimary)
             Text("Социальная сеть нового поколения")
                 .font(.footnote)
                 .foregroundStyle(DesignTokens.textSecondary)
