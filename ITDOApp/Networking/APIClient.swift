@@ -662,8 +662,14 @@ final class APIClient {
         try await request("nuksta/api.php", query: ["action": "status"])
     }
 
-    func subscribeNuksta() async throws {
-        try await requestVoid("nuksta/subscribe_coins.php", method: .post)
+    /// `plan` — один из NukstaBillingPeriod.rawValue ("2w" | "month" | "halfyear" | "year"),
+    /// как в теле POST nuksta/subscribe_coins.php у веб-клиента (NukstaPlan.value).
+    func subscribeNuksta(plan: String = "month") async throws {
+        try await requestVoid("nuksta/subscribe_coins.php", method: .post, body: ["plan": plan])
+    }
+
+    func cancelNuksta() async throws {
+        try await requestVoid("nuksta/cancel.php", method: .post)
     }
 
     func fetchNukstaTheme() async throws -> String {
